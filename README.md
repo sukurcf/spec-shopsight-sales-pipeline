@@ -1,6 +1,6 @@
 # ShopSight sales analytics pipeline
 
-Build a local batch ELT pipeline that turns daily Olist CSV drops into tested PostgreSQL marts and a sales dashboard.
+Build a local Python batch ELT pipeline that turns Olist-equivalent CSV drops into tested PostgreSQL marts and exact JSON/CSV report exports. Scope is Python, data engineering, backend interfaces, and DevOps only; no student-built frontend, including optional work.
 
 ## Quick facts
 
@@ -9,7 +9,7 @@ Build a local batch ELT pipeline that turns daily Olist CSV drops into tested Po
 | Track | Data Engineering — Batch |
 | Difficulty | ★★★★☆ Upper-intermediate |
 | Duration | 6 weeks, about 180 hours |
-| Target job roles | Data Engineer, ETL Developer, Analytics Engineer, SQL Developer, BI Developer |
+| Target job roles | Data Engineer, ETL Developer, Analytics Engineer, SQL Developer |
 | Key skills | Python ingestion, PostgreSQL, dbt, Airflow 3, SQL analytics, data quality, Docker, CI |
 | Prerequisites | Basic Python, basic SQL, Git basics, and willingness to learn Docker |
 | Minimum hardware | 8 GB RAM with the lite profile |
@@ -17,32 +17,32 @@ Build a local batch ELT pipeline that turns daily Olist CSV drops into tested Po
 
 ## What you will build
 
-- A deterministic daily-drop simulator for the 9 Olist CSV files.
+- A deterministic daily-drop simulator that locally generates synthetic data with the 9 Olist file schemas by default.
 - A Python raw loader with validation, quarantine, audit, and reconciliation.
 - Checksum and logical-date idempotency for safe reruns.
-- BRL to INR exchange-rate ingestion with recorded test fixtures.
+- BRL to INR exchange-rate ingestion with explicit recorded historical fixture mode; live Frankfurter is separately opt-in.
 - A dbt warehouse with staging, intermediate, and star-schema marts.
 - Required dbt tests, Python tests, coverage gates, and CI checks.
 - An Airflow 3 daily DAG with sensors, retries, backfill, and alerts.
-- Six analytics views and a four-chart sales dashboard.
+- Six analytics views and a read-only Python report-export CLI with JSON/CSV contracts.
 - A runbook, data dictionary, dbt docs, and Olist licence attribution.
 
 ## Architecture at a glance
 
 ```mermaid
 flowchart LR
-    A["Olist CSV data"] --> B["Daily drop simulator"]
+    A["Local synthetic Olist-equivalent data"] --> B["Daily drop simulator"]
     B --> C["landing/date=YYYY-MM-DD"]
     C --> D["Python validation and raw load"]
     D --> E["raw tables"]
     D --> F["raw_quarantine"]
     D --> G["raw_load_audit"]
-    H["Frankfurter BRL to INR"] --> I["FX rates"]
+    H["Recorded historical FX fixtures or opt-in Frankfurter"] --> I["FX rates"]
     E --> J["dbt staging and intermediate"]
     I --> J
     J --> K["Star schema marts"]
     K --> L["Analytics views"]
-    L --> M["Streamlit or Metabase dashboard"]
+    L --> M["Python report-export CLI: JSON and CSV"]
     N["Airflow 3 LocalExecutor"] --> C
     N --> D
     N --> I
@@ -53,6 +53,8 @@ flowchart LR
 ## How to read this specification
 
 Read the documents in order for your first pass. Start with the overview, roles, requirements, and data model. Then read the pipeline, testing, setup, and delivery documents.
+
+[Document 06](docs/06-tech-stack-and-setup.md) defines the local contract students MUST implement: `uv run --no-sync shopsight local start --profile lite` and `uv run --no-sync shopsight local stop`, initialization, loopback ports, offline demonstration, persistence, and reset. Only specifications exist here; these commands are not implemented in this repository. Built-in Airflow screens MAY be inspected for operations, never as a business deliverable or grading gate.
 
 RFC 2119 keywords are used throughout. MUST means mandatory. SHOULD means recommended. MAY means optional.
 
@@ -105,10 +107,11 @@ Weekly demo: every Friday, show 15 minutes of working progress, test evidence, a
 
 ## Olist attribution
 
-This specification uses the Olist Brazilian E-Commerce Public Dataset from Kaggle as non-commercial training data. Students MUST credit Olist and Kaggle and state the CC BY-NC-SA 4.0 licence in the student README and data dictionary. If Kaggle access fails, use synthetic data with the same schema and document the fallback.
+This specification uses the Olist Brazilian E-Commerce Public Dataset from Kaggle as its non-commercial training schema reference. Students MUST credit Olist and Kaggle and state the CC BY-NC-SA 4.0 licence in the student README and data dictionary. Locally generated synthetic data is the explicit default, not a download-failure fallback. Real Olist ingestion is separately opt-in.
 
 ## Change log
 
 | Version | Date | Changes |
 |---|---|---|
 | 1.0 | 2026-10-02 | First release |
+| 1.1 | 2026-10-02 | Backend/data/DevOps-only revision. Frontend and cloud-deployment deliverables are removed. Their effort and points move to six-view Python JSON/CSV exports, offline local startup, persistence, and failure tests; the 100-point weights, six weeks, and minimum 50 tests are unchanged. |

@@ -1,21 +1,22 @@
 # System architecture
 
-Purpose: This document shows how ShopSight moves daily Olist CSV drops into tested marts and a sales dashboard.
+Purpose: This document shows how ShopSight moves local synthetic Olist-equivalent CSV drops into tested marts and Python JSON/CSV reports, with separate opt-in live sources.
 
 ## Context diagram
 
 ```mermaid
 flowchart LR
-    Source["Olist CSV source files"] --> Simulator["Daily drop simulator"]
-    FX["Frankfurter BRL INR API"] --> Airflow["Airflow 3 daily DAG"]
+    Source["Local synthetic data or opt-in Olist CSV"] --> Simulator["Daily drop simulator"]
+    FX["Recorded historical FX or opt-in Frankfurter"] --> Airflow["Airflow 3 daily DAG"]
     Engineer["Data engineer"] --> Airflow
     Simulator --> Landing["landing/date=YYYY-MM-DD/"]
     Landing --> Airflow
     Airflow --> Postgres["PostgreSQL warehouse"]
     Airflow --> Mailpit["Mailpit or webhook alerts"]
-    Postgres --> Dashboard["Streamlit or Metabase dashboard"]
-    Analyst["Data analyst"] --> Dashboard
-    Sales["Head of Sales"] --> Dashboard
+    Postgres --> ReportCLI["Python report-export CLI"]
+    Analyst["Data analyst"] --> ReportCLI
+    ReportCLI --> Exports["Exact JSON and CSV reports"]
+    Sales["Head of Sales"] --> Exports
     Postgres --> DbtDocs["dbt docs and data dictionary"]
 ```
 
@@ -32,7 +33,8 @@ flowchart TB
             FxClient["FX ingestion package"]
             Dbt["dbt project"]
             Dag["Airflow DAGs"]
-            Dash["dashboard app"]
+            ReportCLI["Python report-export package"]
+            Local["Python local lifecycle entry point"]
             Tests["pytest and dbt tests"]
         end
         subgraph Runtime["Docker Compose runtime"]
@@ -41,7 +43,6 @@ flowchart TB
             AirflowDagProcessor["Airflow DAG processor"]
             Postgres["PostgreSQL 18"]
             Mailpit["Mailpit"]
-            DashboardSvc["Dashboard service on demand"]
         end
         Landing["landing/date=YYYY-MM-DD/"]
         Reports["quality reports"]
@@ -58,11 +59,12 @@ flowchart TB
     Dbt --> Postgres
     Dbt --> Reports
     Dag --> Mailpit
-    DashboardSvc --> Postgres
+    ReportCLI --> Postgres
+    Local --> Runtime
     Tests --> Postgres
 ```
 
-The Airflow metadata database and the warehouse MAY share one local PostgreSQL container. They MUST use separate databases or schemas. Airflow uses LocalExecutor with scheduler, api-server, DAG processor, and metadata PostgreSQL. It MUST NOT require Celery workers, Redis, or a webserver service. A triggerer is optional unless the student uses deferrable operators. Dashboard access MUST be read-only.
+The Airflow metadata database and the warehouse MAY share one local PostgreSQL container. They MUST use separate databases or schemas. Airflow uses LocalExecutor with scheduler, api-server, DAG processor, and metadata PostgreSQL. It MUST NOT require Celery workers, Redis, or a webserver service. A triggerer is optional on the standard profile for deferrable operators. Report access MUST be SELECT-only on the six analytics views. Built-in Airflow screens may be inspected only for operations.
 
 ## Key sequence diagrams
 
@@ -125,7 +127,7 @@ sequenceDiagram
     Audit-->>Dag: Block dbt build on failure
 ```
 
-### FX carry-forward
+### Opt-in live FX carry-forward
 
 ```mermaid
 sequenceDiagram
@@ -161,7 +163,7 @@ sequenceDiagram
 
 ## Data-flow description
 
-1. The simulator reads the full Olist source files or the synthetic fallback.
+1. The simulator generates synthetic Olist-equivalent source files locally by default, or reads real Olist files only in explicitly selected mode.
 2. It writes daily folders under `landing/date=YYYY-MM-DD/`.
 3. Each folder contains the 9 required CSV names.
 4. The Airflow sensor waits for the complete folder.
@@ -170,34 +172,21 @@ sequenceDiagram
 7. Rejected rows load into `raw_quarantine` with the original payload and rule ID.
 8. `raw_load_audit` stores counts, checksums, status, start time, and finish time.
 9. The reconciliation check enforces `source_count = accepted_count + quarantined_count`.
-10. The FX task stores BRL to INR rates and carry-forward flags.
+10. The FX task reads the explicitly selected recorded historical fixture/live source and stores BRL to INR rates and carry-forward flags. Retry failure never changes source mode.
 11. dbt builds staging, intermediate, fact, dimension, and analytics models.
 12. The quality task publishes source counts, quarantine counts, dbt failures, and elapsed time.
-13. The dashboard reads only mart tables and analytics views.
+13. The report CLI reads only the six analytics views and serializes their rows without changing SQL business definitions.
 
 ## Local deployment view
 
 | Profile | Hardware | Services active together | Memory guidance |
 |---|---:|---|---|
-| Lite | 4 cores, 8 GB RAM | PostgreSQL, Airflow scheduler, Airflow api-server, Airflow DAG processor, Mailpit | Keep Airflow parallelism low. Run the dashboard only after Airflow is stopped. |
-| Standard | 6 or more cores, 16 GB RAM | PostgreSQL, Airflow scheduler, Airflow api-server, Airflow DAG processor, Mailpit, dashboard | Use this profile for full backfill timing and Should scope. |
+| Lite | 4 cores, 8 GB RAM | PostgreSQL, Airflow scheduler, Airflow api-server, Airflow DAG processor, Mailpit; short-lived report CLI | Airflow parallelism 1, max active runs 1, dbt threads 1; no student UI services. |
+| Standard | 6 or more cores, 16 GB RAM | Same services; optional triggerer for deferrable operators | Use this profile for full backfill timing and Should scope. |
 
 Windows users SHOULD use WSL2 memory `4GB`, swap `4GB`, processors `4` on an 8 GB laptop. They SHOULD use memory `8GB`, swap `4GB`, processors `6` on a 16 GB laptop. The trainer MUST validate the lite profile before week 1.
 
-Per-service RAM ceilings:
-
-| Service or task | Lite ceiling | Standard ceiling |
-|---|---:|---:|
-| PostgreSQL warehouse and Airflow metadata | 1024 MB | 2048 MB |
-| Airflow scheduler | 512 MB | 1024 MB |
-| Airflow api-server | 512 MB | 1024 MB |
-| Airflow DAG processor | 512 MB | 1024 MB |
-| Airflow triggerer, only for deferrable operators | 256 MB | 512 MB |
-| dbt run inside an Airflow task | 1024 MB | 2048 MB |
-| Mailpit | 128 MB | 256 MB |
-| Dashboard, on demand in lite profile | 512 MB | 1024 MB |
-
-The trainer pre-check MUST validate these ceilings on an 8 GB laptop.
+[Doc 06](06-tech-stack-and-setup.md) is authoritative for fixed loopback ports, start/stop/reset, storage, health, and proposed aggregate RAM budgets (`3136 MB` lite; `6528 MB` standard including optional triggerer). LocalExecutor child tasks are included in the scheduler budget. These are proposals, not measured results; trainer pre-check must measure the implemented profile.
 
 ## Expected student repository tree
 
@@ -218,6 +207,8 @@ shopsight/
 │       ├── ingestion/
 │       ├── fx/
 │       ├── quality/
+│       ├── reports/
+│       ├── local/
 │       └── common/
 ├── airflow/
 │   └── dags/
@@ -228,11 +219,12 @@ shopsight/
 │   │   └── marts/
 │   ├── tests/
 │   └── seeds/
-├── dashboard/
 ├── tests/
 │   ├── unit/
 │   ├── integration/
 │   ├── dag/
+│   ├── cli/
+│   ├── local/
 │   └── reconciliation/
 ├── docs/
 │   ├── adr/
@@ -247,13 +239,13 @@ The full Olist dataset MUST NOT be committed. The sample dataset MUST keep each 
 
 | Principle | ShopSight meaning |
 |---|---|
-| Layered ELT | Keep landing, raw, staging, intermediate, marts, and dashboard layers separate. |
+| Layered ELT | Keep landing, raw, staging, intermediate, marts, and report serialization separate. |
 | Idempotent batches | A rerun for one logical date MUST not duplicate accepted rows or mart totals. |
 | Audit before trust | Raw loads are trusted only after audit and reconciliation pass. |
 | Decimal money | BRL and INR values use decimal types. Rounding happens only at mart output. |
 | Local and free first | Must scope runs with Docker Compose on an 8 GB laptop. |
-| Fixture-based CI | CI tests FX with recorded fixtures and no live network call. |
-| Clear ownership | Python loads data, dbt transforms data, Airflow orchestrates tasks, and the dashboard only reads marts. |
+| Explicit local sources | Local runtime and CI use synthetic data and recorded FX by configuration; live failures never trigger a fallback. |
+| Clear ownership | Python loads and exports data, dbt transforms data, Airflow orchestrates tasks, and reports only read analytics views. |
 
 ## ADR topics the student MUST write
 
@@ -261,10 +253,10 @@ The full Olist dataset MUST NOT be committed. The sample dataset MUST keep each 
 |---|---|---|
 | ADR-001 | DataFrame engine | Should ShopSight use pandas 3.0.x or Polars 1.44.x for simulator and ingestion work? |
 | ADR-002 | Validation library | Should row validation use pandera 0.33.x schemas or Pydantic models at the ingestion boundary? |
-| ADR-003 | Dashboard tool | Should the dashboard use Streamlit 1.64.x or Metabase OSS 0.63.x for the 8 GB lite profile? |
+| ADR-003 | Report export boundary | How will the Python CLI preserve view columns, decimal values, filter semantics, ordering, and read-only access? |
 | ADR-004 | Customer history | Should `dim_customer` stay Type 1 for Must scope or add the Should SCD Type 2 snapshot? |
 | ADR-005 | dbt execution in Airflow | Should Airflow call dbt as a command task or use an integration such as astronomer-cosmos? |
-| ADR-006 | FX fixture strategy | How will recorded Frankfurter responses be stored so CI never calls the network? |
+| ADR-006 | Explicit FX modes | How will recorded historical Frankfurter responses support offline local runs while opt-in live failures still fail and alert? |
 | ADR-007 | Optional lake layer | Is a local Parquet or DuckDB layer worth the extra complexity after all Must gates pass? |
 
 [Back to README](../README.md)

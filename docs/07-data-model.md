@@ -6,12 +6,12 @@ Purpose: This document defines ShopSight source data, warehouse tables, relation
 
 | Item | Value |
 |---|---|
-| Dataset | Olist Brazilian E-Commerce Public Dataset |
+| Dataset | Locally generated synthetic Olist-equivalent data by default; Olist Brazilian E-Commerce Public Dataset is opt-in. |
 | Official page | https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce |
 | Data volume | About 100,000 orders from 2016 to 2018 |
 | Licence | CC BY-NC-SA 4.0 |
 | Attribution | Credit Olist and Kaggle in README and data dictionary. |
-| Fallback | Synthetic data with the same 9 file names, columns, keys, and value types. |
+| Local mode | Fictional synthetic data generated with seed `20261002` and the same 9 file names, columns, keys, and value types; not an automatic download-failure fallback. |
 
 ## Source files and columns
 
@@ -37,7 +37,7 @@ Purpose: This document defines ShopSight source data, warehouse tables, relation
 | Staging | Standardized names, types, and source metadata. | dbt | Rebuilt or incremental. |
 | Intermediate | Reusable joins and calculations. | dbt | Rebuilt or incremental. |
 | Marts | Star schema and analytics views. | dbt | Trusted output. |
-| Dashboard | Business presentation. | Data analyst | Reads marts only. |
+| Report exports | Exact JSON/CSV serialization of the six analytics views. | Python CLI / Data analyst | Read-only; no separate database layer or frontend. |
 
 ## Core warehouse entities
 
@@ -251,6 +251,8 @@ These are requirements, not SQL DDL.
 | FX | Each rate row has rate date, base, quote, decimal rate, source rate date, and carried-forward flag. |
 | Mart | Each table states grain, keys, relationships, and half-up money rounding rule. |
 | Analytics | Views read marts, not raw tables. |
+| Report export | Uses the exact view columns and ordering in doc 08, currency/decimal strings, explicit supported filters, and JSON/CSV empty results. No SQL business logic is duplicated in Python. |
+| Local sources | Synthetic generation and recorded historical FX are explicit defaults; live Olist/Frankfurter input is separately opt-in. |
 
 ## Partitioning and incrementality
 
@@ -271,11 +273,11 @@ Load audit uses logical date, batch ID, and attempt ID. Fact models MUST be incr
 | Data | Retention requirement |
 |---|---|
 | CI sample data | Keep in the student repository. Keep each source table at or below 1,000 rows. |
-| Full Olist data | Do not commit the full dataset. Store locally for training runs. |
+| Full historical data | Do not commit full synthetic or real Olist datasets. Store locally for training runs. |
 | Raw accepted data | Keep for the project lifetime in local PostgreSQL. |
 | Quarantine data | Keep for the project lifetime for debugging. |
 | Audit data | Keep for the project lifetime for demo and viva evidence. |
-| Dashboard extracts | Recreate from marts when possible. |
+| Report extracts | Recreate from views; preserve exported evidence through stop/start in the local reports bind mount. |
 
 ## Migration policy
 
@@ -283,6 +285,7 @@ Load audit uses logical date, batch ID, and attempt ID. Fact models MUST be incr
 - Update dbt docs and the data dictionary with each schema change.
 - Keep sample data compatible with CI.
 - Document breaking mart changes in the student CHANGELOG.
-- Do not remove a mart column used by the dashboard without updating the dashboard and tests.
+- Do not remove a view column used by the report CLI without updating its contract, data dictionary, and JSON/CSV snapshot tests.
+- Local initialization applies versioned migrations idempotently; stop/start preserves PostgreSQL data, committed file state, and audit history as defined in doc 06.
 
 [Back to README](../README.md)

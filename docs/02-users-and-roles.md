@@ -8,11 +8,11 @@ Purpose: This document defines ShopSight roles, personas, permissions, journeys,
 |---|---|---|
 | Data engineer | Human | Operate simulator, raw loads, Airflow runs, alerts, and backfills. |
 | Analytics engineer | Human | Build dbt layers, marts, tests, and data documentation. |
-| Data analyst | Human | Query marts and maintain dashboard questions. |
-| Head of Sales | Human | Read daily sales, delivery, seller, and payment metrics. |
+| Data analyst | Human | Query marts and run read-only JSON/CSV report exports. |
+| Head of Sales | Human | Consume exported sales, delivery, seller, and payment reports; no browser application is built. |
 | Trainer | Human | Review PRs, demos, tests, ADRs, and viva answers. |
-| Source systems | System | Provide 9 Olist CSV files in daily landing folders. |
-| Frankfurter API | System | Provide BRL to INR exchange rates. |
+| Source systems | System | Generate synthetic Olist-equivalent files locally by default; real Olist is opt-in. |
+| FX source | System | Supply recorded historical BRL to INR fixtures locally; Frankfurter is opt-in live mode. |
 | CI system | System | Run checks with PostgreSQL and sample data. |
 
 ## Personas
@@ -22,13 +22,13 @@ Purpose: This document defines ShopSight roles, personas, permissions, journeys,
 | Aditi Menon | Data engineer | Finish the daily run before the sales stand-up. Recover failed dates safely. | Duplicate CSV drops and unclear row-count mismatches slow her down. | High |
 | Imran Shaikh | Analytics engineer | Publish trusted marts with clear grains and tests. | He worries that `customer_id` will overcount repeat customers. | High |
 | Nisha Rao | Data analyst | Answer sales questions without manual spreadsheet joins. | She needs INR revenue and English product categories. | Medium |
-| Meera Iyer | Head of Sales | See daily GMV, late delivery, and payment mix quickly. | She does not want technical table names in charts. | Low |
+| Meera Iyer | Head of Sales | Review daily GMV, late delivery, and payment mix from exported reports. | She needs documented columns and explicit BRL/INR units. | Low |
 
 ## Permission matrix
 
 | Action | Data engineer | Analytics engineer | Data analyst | Head of Sales | Trainer | CI system |
 |---|---|---|---|---|---|---|
-| Download Olist data | Yes | Yes | No | No | Review | No |
+| Generate local synthetic data or opt into Olist input | Yes | Yes | No | No | Review | Yes, synthetic only |
 | Run daily-drop simulator | Yes | Yes | No | No | Yes | Yes |
 | Load raw PostgreSQL tables | Yes | No | No | No | Review | Yes |
 | View quarantine rows | Yes | Yes | Yes | No | Yes | Yes |
@@ -36,8 +36,8 @@ Purpose: This document defines ShopSight roles, personas, permissions, journeys,
 | Run dbt tests | Yes | Yes | No | No | Yes | Yes |
 | Trigger Airflow backfill | Yes | No | No | No | Review | No |
 | View marts | Yes | Yes | Yes | Yes | Yes | Yes |
-| Edit dashboard | No | Yes | Yes | No | Review | No |
-| View dashboard | Yes | Yes | Yes | Yes | Yes | No |
+| Run read-only report exports | Yes | Yes | Yes | No | Yes | Yes |
+| Read exported JSON/CSV reports | Yes | Yes | Yes | Yes | Yes | Yes |
 | Approve final submission | No | No | No | No | Yes | No |
 
 ## Journey 1: daily successful run
@@ -49,14 +49,17 @@ sequenceDiagram
     participant LD as Landing folder
     participant PG as PostgreSQL
     participant DBT as dbt
-    participant DS as Dashboard
+    participant CLI as Python report-export CLI
     DE->>AF: Monitor daily logical date 2018-01-02
     AF->>LD: Wait for 9 source files
     AF->>PG: Load accepted rows and quarantine bad rows
     AF->>PG: Store BRL to INR rate
     AF->>DBT: Build marts and tests
     DBT->>PG: Publish trusted tables
-    DE->>DS: Open dashboard after successful run
+    DE->>CLI: Export the six certified analytics views
+    CLI->>PG: Read views with report_reader
+    PG-->>CLI: Ordered results with documented columns
+    CLI-->>DE: JSON or CSV evidence
 ```
 
 ## Journey 2: bad-row recovery
@@ -94,12 +97,13 @@ flowchart LR
 | US-07 | As an analytics engineer, I want generic, singular, freshness, and unit tests, so that mart defects stop the run. | Must | FR-DQ-01 |
 | US-08 | As a data engineer, I want one Airflow daily DAG with retries and alerts, so that operations are repeatable. | Must | FR-ORCH-01 |
 | US-09 | As a data analyst, I want 6 analytics views, so that common sales questions are answered from marts. | Must | FR-ANA-01 |
-| US-10 | As the Head of Sales, I want 4 dashboard charts in the lite profile, so that I can review sales on an 8 GB laptop. | Must | FR-DASH-01 |
+| US-10 | As the Head of Sales, I want exact JSON/CSV reports from the six views, so that I can review metrics produced locally on an 8 GB laptop. | Must | FR-REP-01 |
 | US-11 | As a student, I want CI gates with sample data, so that each PR proves quality before review. | Must | FR-CI-01 |
 | US-12 | As a trainer, I want data docs, a runbook, and licence notes, so that the project can be reviewed fairly. | Must | FR-DOC-01, FR-LIC-01 |
 | US-13 | As a data engineer, I want configurable simulator problems, so that I can practise more failure scenarios. | Should | FR-SIM-02 |
 | US-14 | As an analytics engineer, I want customer SCD Type 2, so that address changes can be analysed historically. | Should | FR-DBT-03 |
 | US-15 | As a data analyst, I want extra retention and review-delay views, so that I can explore customer behaviour. | Should | FR-ANA-02 |
 | US-16 | As a data engineer, I want a run quality report and performance evidence, so that weekly demos show reliability. | Should | FR-DQ-02 |
+| US-17 | As a student, I want one local start/stop interface with offline seed data and persistent storage, so that I can reproduce the project on my own machine. | Must | FR-OPS-01 |
 
 [Back to README](../README.md)

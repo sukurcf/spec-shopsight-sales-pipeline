@@ -4,15 +4,17 @@ Purpose: This document defines the ShopSight test approach, tools, fixtures, cov
 
 ## Test strategy
 
-ShopSight uses a data-pipeline test pyramid. Fast Python and dbt tests run first. PostgreSQL, Airflow, and dashboard checks run after the core rules pass.
+ShopSight uses a data-pipeline test pyramid with at least 50 meaningful tests. Fast Python and dbt tests run first. PostgreSQL, Airflow, report-export, and local acceptance checks run after core rules pass. Frontend tests are retired and replaced by Python CLI/local tests.
 
 | Level | Approximate count | Examples | CI gate |
 |---|---:|---|---|
-| Unit | 18 | Schema rules, checksums, FX carry-forward, money calculations | Yes |
-| Integration | 13 | PostgreSQL raw loads, reconciliation, idempotent reruns | Yes |
+| Unit | 19 | Schema rules, checksums, explicit FX modes, carry-forward, money calculations | Yes |
+| Integration | 15 | PostgreSQL raw loads, reconciliation, idempotent reruns/corrections | Yes |
 | Data quality | 19 | dbt generic, singular, unit, source freshness, and analytics-result tests | Yes |
-| DAG and CI | 9 | DAG import, cycles, retries, sample limits, alerts, and backfill tests | Yes |
-| UI and security | 4 | Dashboard labels, empty state, secrets, read-only user | Yes or demo |
+| DAG and CI | 12 | DAG import, cycles, retries, sample limits, alerts, backfill, coverage | Yes |
+| CLI and security | 8 | Exact JSON/CSV snapshots, filters, empty results, atomic output, secrets | Yes |
+| Local acceptance | 4 | Offline clean startup, deterministic demo, persisted restart, clear failures | Yes and trainer pre-check |
+| Documentation | 2 | Runbook and attribution | Yes or named review |
 | Performance | 3 | Daily run, backfill, CI duration | Yes for CI, demo for local timing |
 
 ## Tools and reference versions
@@ -31,7 +33,6 @@ ShopSight uses a data-pipeline test pyramid. Fast Python and dbt tests run first
 | Apache Airflow | 3.3.x | DAG integrity tests |
 | Ruff | 0.16.x | Python lint and format |
 | mypy | 2.4.x | Typed Python boundary |
-| Streamlit or Metabase OSS | 1.64.x or 0.63.x | Dashboard checks |
 | Mailpit | 1.31.x | Alert verification |
 | pip-audit and Trivy | 2.10.x and 0.75.x | Dependency and image scans |
 
@@ -39,10 +40,10 @@ ShopSight uses a data-pipeline test pyramid. Fast Python and dbt tests run first
 
 | Environment | Purpose | Data | Network |
 |---|---|---|---|
-| Developer laptop lite | Daily development on 8 GB RAM | Fixture and selected historical dates | Frankfurter allowed only outside CI |
-| Developer laptop standard | Full backfill and Should performance evidence | Full Olist dataset | Frankfurter allowed for manual run |
-| GitHub Actions CI | Mandatory pull-request gate | Sample fixture at or below 1,000 rows per source table | Live FX network blocked |
-| Trainer demo | Final verification | Full data or fixture fallback | Alerts shown in Mailpit or webhook log |
+| Developer laptop lite | Daily development on 8 GB RAM | Local synthetic seed and recorded historical FX | Offline after initial downloads; live FX separately opt-in |
+| Developer laptop standard | Full backfill and Should performance evidence | About 100,000 generated historical orders; real Olist opt-in | Offline fixture mode by default |
+| GitHub Actions CI | Mandatory pull-request gate | Sample fixture at or below 1,000 rows per source table | External runtime network blocked; loopback/service network allowed |
+| Trainer demo | Final verification | Deterministic local seed and recorded FX | Offline; alerts verified via Mailpit API or webhook log, never a required console |
 
 ## Test data strategy
 
@@ -72,7 +73,7 @@ The student MUST create deterministic fixtures. The fixture `fixture_2018_01_02_
 | Expected total GMV INR | `17550.00` INR |
 | Known bad rows | Blank `order_id` at data row 8; negative `price`; invalid `payment_type` |
 
-FX tests MUST use recorded Frankfurter fixture files. The fixture for `2018-01-06` MUST carry forward the `2018-01-05` rate and set `is_carried_forward=true`.
+FX tests and the default local demo MUST use explicitly configured recorded historical Frankfurter fixtures. The fixture for `2018-01-06` MUST carry forward the `2018-01-05` rate `19.5678` and set `is_carried_forward=true`. Failure-response fixtures exercise opt-in live retry behavior without actual HTTP. A missing fixture fails, rather than calling the API.
 
 ## Coverage thresholds
 
@@ -80,7 +81,7 @@ FX tests MUST use recorded Frankfurter fixture files. The fixture for `2018-01-0
 |---|---|---:|---:|---|
 | Python application | `shopsight.simulator`, `shopsight.ingestion`, `shopsight.fx`, `shopsight.quality` | 85% | 75% | Tests, generated files, notebooks, `__main__` blocks |
 | Airflow helper modules | Python functions imported by DAGs | 85% | 75% | Airflow provider internals |
-| Dashboard helpers | Dashboard query and formatting helpers | 85% | 75% | Visual framework internals |
+| Report and local CLI | `shopsight.reports`, `shopsight.local`, console argument/serialization helpers | 85% | 75% | Third-party CLI internals only |
 | Shared package | `shopsight.common` | 85% | 75% | Generated files and `__main__` blocks |
 
 The CI build MUST fail when line or branch coverage is below the threshold. Line and branch gates are enforced separately.
@@ -91,8 +92,8 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 |---|---|---|---|---|---|---|---|---|
 | TC-UT-001 | Validate complete landing folder names | Unit | Must | FR-SIM-01, BR-02, BR-03 | Fixture root is empty. | Generate fixture for `2018-01-02`; list the date folder. | Seed `20261002`. | Folder `landing/date=2018-01-02/` contains exactly the 9 required file names. |
 | TC-UT-002 | Repeat simulator seed is deterministic | Unit | Must | FR-SIM-01, BR-01 | Two clean output roots exist. | Generate the same date range twice; compare order-row counts by date. | Seed `20261002`; range `2018-01-01` to `2018-01-03`. | Both runs return counts `2018-01-01=5`, `2018-01-02=8`, `2018-01-03=4`. |
-| TC-UT-003 | Missing source file stops simulator | Unit | Must | FR-SIM-01, BR-03 | `olist_products_dataset.csv` is absent. | Start simulation for `2018-01-02`. | Source directory without products file. | Job status is `FAILED`, error identifier is `SIM-MISSING-SOURCE`, and no date folder is created. |
-| TC-UT-004 | Synthetic fallback preserves schema | Unit | Must | FR-LIC-01, BR-21 | Kaggle files are unavailable. | Generate synthetic fallback; read headers. | Fallback mode `synthetic`. | All 9 files exist and `olist_orders_dataset.csv` has the 8 documented order columns. |
+| TC-UT-003 | Missing selected Olist source file stops simulator | Unit | Must | FR-SIM-01, BR-03 | Opt-in `olist` directory lacks `olist_products_dataset.csv`. | Start simulation for `2018-01-02`. | Source mode `olist`, incomplete source directory. | Job status is `FAILED`, error identifier is `SIM-MISSING-SOURCE`, no date folder is created, and mode does not switch to synthetic. |
+| TC-UT-004 | Default synthetic mode preserves schema offline | Unit | Must | Synthetic schema/licence: FR-SIM-01, FR-LIC-01, BR-21 | No Kaggle files or external network are available. | Generate local synthetic data; read headers. | Source mode `synthetic`, seed `20261002`. | All 9 files exist and `olist_orders_dataset.csv` has the 8 documented order columns without a download attempt. |
 | TC-UT-005 | Header mismatch fails whole file | Unit | Must | FR-RAW-01 | Raw loader is configured. | Validate orders file with `order_identifier` instead of `order_id`. | One malformed header file. | File status is `failed`; error identifier is `VAL-SOURCE-SCHEMA`; accepted count is `0`. |
 | TC-UT-006 | Blank order ID is quarantined | Unit | Must | FR-RAW-01, BR-05 | Orders schema is loaded. | Validate one row with blank `order_id`. | Source row number `42`. | One quarantine row has `rule_id=VAL-ORDER-ID-REQUIRED` and `source_row_number=42`. |
 | TC-UT-007 | Negative item price is quarantined | Unit | Must | FR-RAW-01 | Items schema is loaded. | Validate an item row with `price=-1.00`. | Bad price row has `order_id=ORD-BAD-PRICE`. | Row is rejected with `rule_id=VAL-PRICE-NONNEGATIVE`; accepted count is `0`. |
@@ -102,11 +103,12 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 | TC-UT-011 | Failed rerun preserves old rows | Unit | Must | FR-RAW-02, NFR-REL-01 | Previous successful rows exist. | Validate changed file with bad header. | Existing checksum `abc123`; new checksum `bad999`. | Failed attempt is recorded, and previous accepted count remains `7` orders. |
 | TC-UT-012 | FX direct market-day rate | Unit | Must | FR-FX-01, BR-09, BR-10 | FX fixture exists. | Parse fixture for `2018-01-02`. | Rate `19.50`. | Stored row has base `BRL`, quote `INR`, rate date `2018-01-02`, and `is_carried_forward=false`. |
 | TC-UT-013 | FX carry-forward weekend | Unit | Must | FR-FX-01, BR-12 | FX fixture exists. | Build rates for `2018-01-06`. | Previous rate date `2018-01-05`, rate `19.5678`. | Stored row has `source_rate_date=2018-01-05` and `is_carried_forward=true`. |
-| TC-UT-014 | FX retry exhaustion has no fallback | Unit | Must | FR-FX-01 plus BR-11 and NFR-REL-03 | FX client receives HTTP `422`. | Simulate initial call plus 2 retries. | Invalid currency response fixture. | Task status is `failed`; alert identifier is `FX-HTTP-RETRY-EXHAUSTED`; no rate row is written. |
+| TC-UT-014 | Live FX retry exhaustion never switches modes | Unit | Must | FR-FX-01 plus BR-11 and NFR-REL-03 | FX mode is `live`; mocked client receives HTTP `422`. | Simulate initial call plus 2 retries with a virtual clock. | Failing HTTP response fixture and valid local recorded rate both exist. | Task status is `failed`; alert code is `FX-HTTP-RETRY-EXHAUSTED`; no rate is written and the available local fixture is not read as a fallback. |
 | TC-UT-015 | GMV excludes freight | Unit | Must | FR-DBT-02, BR-16 | Decimal total calculator is available. | Calculate order totals. | Prices `100.00`, `50.00`; freight `10.00`, `5.00`. | `gmv_brl=150.00` and `freight_brl=15.00`. |
 | TC-UT-016 | Payment within tolerance passes | Unit | Must | FR-DBT-02, BR-19 | Payment reconciliation function is available. | Reconcile payment against item plus freight total. | Payment `166.00`; expected `165.00`. | Reconciliation status is `within_tolerance`. |
 | TC-UT-017 | Payment outside tolerance creates exception | Unit | Must | FR-DBT-02, BR-19 | Payment reconciliation function is available with failure reporting. | Reconcile payment against item plus freight total. | Payment `170.00`; expected `165.00`. | Reconciliation status is `failed`, and an exception record has difference `5.00`. |
 | TC-UT-018 | Mart rounding only at output | Unit | Must | FR-DBT-02, BR-17, BR-18 | Money helper uses decimals. | Format mart output for values `12.345` and `12.355`. | Decimal input values. | Half-up rounding returns `12.35` and `12.36`. |
+| TC-UT-019 | Missing historical FX fixture fails without HTTP | Unit | Must | FR-FX-01, BR-10, BR-11 | Mode is `fixture`; requested date or preceding seed is absent. | Request the missing date with HTTP calls trapped. | Missing `2018-01-01` range seed fixture. | Task fails and alerts with `FX-FIXTURE-MISSING`, writes no rate, and makes 0 HTTP calls. |
 | TC-IT-001 | Load full fixture into raw | Integration | Must | FR-RAW-01, BR-04, BR-06 | PostgreSQL 18 service is running. | Load `fixture_2018_01_02_small`. | 63 source rows. | Audit total shows `source_count=63`, `accepted_count=60`, `quarantined_count=3`, status `reconciled`. |
 | TC-IT-002 | Quarantine keeps raw payload | Integration | Must | FR-RAW-01, BR-05 | Fixture load completed. | Query quarantine for blank order ID row. | Source data row number `8`, excluding the header. | Row contains file name `olist_orders_dataset.csv`, rule `VAL-ORDER-ID-REQUIRED`, source row number `8`, and original blank `order_id`. |
 | TC-IT-003 | Same logical date twice is idempotent | Integration | Must | FR-RAW-02, NFR-REL-01 | Fixture load completed once. | Run the same logical date a second time. | Small fixture named `fixture_2018_01_02_small`. | Accepted rows remain `60`; fct orders remain `7`; GMV remains `900.00`. |
@@ -119,7 +121,7 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 | TC-IT-008 | Product dimension uses English category | Integration | Must | FR-DBT-01 | Raw product and translation tables exist. | Build `dim_product`. | Category `beleza_saude` maps to `health_beauty`. | `dim_product` exposes `product_category_name_english=health_beauty`. |
 | TC-IT-009 | Facts have required grains | Integration | Must | FR-DBT-01, BR-13, BR-15 | dbt marts are built. | Count fact keys in fixture mart. | 7 orders and 9 items. | `fct_orders` has 7 unique `order_id` values; `fct_order_items` has 9 unique order-item keys. |
 | TC-IT-010 | Revenue totals match within 0.01 percent | Integration | Must | FR-DBT-02 | Staging and mart models are built. | Compare staging GMV with mart GMV. | Expected `900.00` BRL. | Difference is `0.00%`, which is within `0.01%`. |
-| TC-IT-011 | Dashboard read-only user cannot write | Integration | Must | NFR-SEC-02, FR-DASH-01 | Dashboard database user exists. | Attempt to insert into `fct_orders` as dashboard user. | Read-only connection. | Database rejects write and dashboard user can still select from `mart_monthly_gmv`. |
+| TC-IT-011 | Report reader cannot write or read raw schemas | Integration | Must | NFR-SEC-02, FR-REP-01 | `report_reader` exists and views are built. | Attempt an insert into `fct_orders` and a SELECT from raw orders; then read monthly view. | Restricted connection. | Both forbidden statements are rejected; SELECT from `mart_monthly_gmv` succeeds with the `900.00` BRL fixture row. |
 | TC-IT-012 | Structured logs contain run context | Integration | Must | NFR-OBS-01 | One fixture run completed. | Inspect application log events for load task. | Logical date `2018-01-02`. | Each load log event has `logical_date`, `batch_id`, `file_name`, `task_name`, and `status`. |
 | TC-IT-013 | Audit row has timing and checksum | Integration | Must | NFR-OBS-02 | Fixture run completed. | Query audit row for orders file. | Orders source file `olist_orders_dataset.csv`. | Row has non-empty checksum, `started_at_utc`, `finished_at_utc`, counts, and terminal status. |
 | TC-DQ-001 | dbt grain keys are tested | Data quality | Must | FR-DQ-01 | dbt project is configured. | Run dbt generic tests for staging, intermediate, and mart grain keys. | All dbt models. | Every model grain key has `unique` and `not_null`; failures count is `0`. |
@@ -147,22 +149,28 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 | TC-INFRA-004 | CI sample row limit is enforced | Infra | Must | FR-CI-01, BR-26 | CI data check exists. | Run check on orders sample with 1,001 rows. | Oversized sample file. | Check fails with `CI-SAMPLE-ROW-LIMIT` before dbt build. |
 | TC-INFRA-005 | CI blocks live FX network | Infra | Must | FR-CI-01, FR-FX-01 | CI network block is active. | Run FX tests that try a live HTTP call. | Network-block fixture. | Test fails with message `FX fixtures are required in CI`. |
 | TC-INFRA-006 | Sensor timeout alerts missing file | Infra | Must | FR-ORCH-01 | Landing folder for `2018-01-02` lacks one required file. | Run the sensor with one missing file. | Missing `product_category_name_translation.csv`. | Task fails after the timeout and alert names the missing file. |
-| TC-INFRA-007 | Exhausted FX retries alert | Infra | Must | FR-ORCH-01, FR-FX-01 | FX task uses recorded failing response fixtures. | Run FX task with failing response fixtures. | Three failed calls including 2 retries. | Alert has code `FX-HTTP-RETRY-EXHAUSTED` and no fallback rate is stored. |
+| TC-INFRA-007 | Exhausted live FX retries alert | Infra | Must | FR-ORCH-01, FR-FX-01 | Live-mode FX client is mocked with recorded failing responses. | Run initial call plus 2 retries using a virtual clock. | Three failures and an available valid local fixture. | Alert has code `FX-HTTP-RETRY-EXHAUSTED`; no fallback rate is stored and fixture mode is never entered. |
 | TC-INFRA-008 | dbt failure sends alert | Infra | Must | FR-ORCH-01 | DAG run reaches dbt after raw and FX tasks pass. | Run dbt with one failing singular test. | Bad delivered-date fixture. | DAG stops before notify success and sends a failure alert with code `DBT-TEST-FAILED`. |
 | TC-INFRA-009 | Inclusive 3-day backfill completes | Infra | Must | FR-ORCH-01 | Landing folders exist for three dates. | Backfill `2018-01-01` to `2018-01-03`. | Three complete logical-date folders. | Completed audit records exist for all three dates, including both endpoints. |
 | TC-SEC-001 | Secrets are not committed | Security | Must | NFR-SEC-01 | Repository has sample config only. | Run Gitleaks scan. | `.env.example` with placeholder values. | Scan reports 0 secrets and no real password value. |
 | TC-SEC-002 | Dependency scan gate fails on known issue | Security | Must | NFR-SEC-03 | CI security stage is configured. | Run dependency scan against a deliberately vulnerable test lockfile copy. | Test-only vulnerable package fixture. | Security stage fails and reports the vulnerable package name. |
 | TC-SEC-003 | DPDP note exists in documentation | Security | Must | NFR-PRIV-01, FR-LIC-01 | Student docs are written. | Review README and data dictionary text. | Documentation draft. | Both documents mention customer IDs, location fields, and DPDP Act 2023 awareness. |
-| TC-UI-001 | Dashboard charts use business labels | UI | Must | FR-DASH-01, NFR-USE-01 | Marts are built. | Open dashboard home page. | Fixture marts. | Four charts are visible and money chart titles include `BRL` or `INR`. |
-| TC-UI-002 | Dashboard empty state is friendly | UI | Must | FR-DASH-01 | Dashboard filter is available. | Select a date range with no mart rows. | Date range `2019-01-01` to `2019-01-31`. | Dashboard shows `No data for selected date range` and no stack trace. |
-| TC-UI-003 | Lite profile does not run dashboard with Airflow | UI | Must | FR-DASH-01, BR-25 | Lite profile is selected. | Start Airflow; follow dashboard run procedure. | 8 GB profile. | Runbook keeps dashboard stopped until Airflow is stopped. |
+| TC-REP-001 | Six-view exact JSON/CSV exports | CLI | Must | Serialization fidelity: FR-REP-01, BR-24, NFR-USE-01 | All six January fixture views exist. | Export all six views in both formats; compare snapshots to ordered SQL rows and doc 08 columns. | Month `2018-01`. | All 12 exports match; monthly JSON/CSV is byte-for-byte doc 08's example, with integer counts `7/9`, decimal strings `900.00/17550.00/120.00`, and currency column suffixes. |
+| TC-REP-002 | Empty exports are successful machine-readable results | CLI | Must | No-data export behavior: FR-REP-01, BR-24, NFR-USE-01 | Monthly mart has no January 2019 rows. | Export monthly view with each format. | `--month 2019-01`. | JSON has `filters={"month":"2019-01","state":null}`, `row_count=0`, `rows=[]`; CSV is exactly the monthly header plus LF. Both exit `0`, with no stack trace or log on stdout. |
+| TC-REP-003 | Invalid view, format, and filter never execute SQL | CLI | Must | FR-REP-01, BR-24 | SQL execution is instrumented. | Try raw table view, `--format html`, month `2018-13`, and `--state SP` on monthly GMV. | Four invalid argument sets. | Every command exits `2`, stderr code is `REPORT-INVALID-ARGUMENT`, stdout is empty, and SQL call count is `0`. |
+| TC-REP-004 | State filter preserves view definitions | CLI | Must | FR-REP-01, FR-ANA-01 | SP delivery row with 4 delivered orders is built. | Export delivery-state view for January/SP, compare JSON and CSV to the view. | `--view mart_delivery_state --month 2018-01 --state SP`. | One SP row retains delivered count `4`, average delivery days `5.00`, and late count `1`; no Python aggregation or rank recalculation occurs. |
+| TC-REP-005 | Failed file export preserves previous output | CLI | Must | FR-REP-01, NFR-USE-01 | Existing report file contains known bytes; destination is made unwritable. | Export monthly report to that destination. | Existing file `reports/monthly.csv`. | Exit is `4`, stderr code is `REPORT-OUTPUT-FAILED`, previous bytes remain unchanged, and stdout is empty. |
+| TC-LOCAL-001 | Clean-clone offline local startup and health | Local acceptance | Must | Bootstrap/portability: FR-OPS-01, BR-25, NFR-PORT-01 | Clean student clone, initial locked installs/images cached, isolated empty project volumes. | Block external network; capture stdout and exit code from doc 06 lite start; run JSON health. | Default synthetic/fixture modes. | Schemas, migrations, users, and seed files initialize; start exits `0`; start stdout and health output each match doc 06's exact healthy JSON; bindings are only `127.0.0.1:15434/18080/11027/18027`; no student UI or cloud service starts. |
+| TC-LOCAL-002 | Deterministic offline core operation | Local acceptance | Must | Offline end-to-end path: FR-OPS-01, FR-SIM-01, FR-FX-01, FR-REP-01, NFR-PORT-01 | Lite services are healthy and external runtime network is blocked. | Run doc 06 demonstration, then monthly JSON and CSV exports. | `fixture_2018_01_02_small`, rate `19.50`. | Demo JSON exactly matches doc 06: source/accepted/quarantine `63/60/3`, orders/items `7/9`, GMV BRL/INR `900.00/17550.00`, freight `120.00`; exports exactly match doc 08 with 0 external requests. |
+| TC-LOCAL-003 | Stop/start preserves committed data | Local acceptance | Must | Committed-state persistence: FR-OPS-01, FR-RAW-02, BR-25, NFR-REL-01, NFR-PORT-01 | Offline demonstration completed. | Snapshot committed checksums, raw/mart counts and audit IDs; run stop then start; compare and rerun the date. | Default project volumes and fixture. | All original audit IDs/checksums persist; accepted rows stay `60`, quarantine rows `3`, mart orders/items `7/9`, GMV `900.00`; initialization does not overwrite data and the rerun only adds skipped attempts. |
+| TC-LOCAL-004 | Invalid input and unavailable dependencies fail clearly | Local acceptance | Must | FR-OPS-01, FR-REP-01, BR-25, NFR-PORT-01 | Isolated local test profile. | Try invalid profile; mock unavailable Docker; stop PostgreSQL and export; request reset without confirmation. | Profile `unknown`, unavailable local dependencies. | Invalid profile/reset exits `2` with `LOCAL-INVALID-ARGUMENT`/`LOCAL-RESET-CONFIRMATION-REQUIRED`; dependency cases exit `3` with `LOCAL-DEPENDENCY-UNAVAILABLE`; no partial output, secret leak, or data deletion occurs. |
 | TC-PERF-001 | Daily run meets Should target | Performance | Should | NFR-PERF-02 | Standard fixture environment is warm. | Time one DAG run for `2018-01-02`. | 63-row fixture. | Run completes in less than 5 minutes and writes a quality summary. |
-| TC-PERF-002 | Full backfill meets Should target | Performance | Should | NFR-PERF-01 | Standard 16 GB profile is ready. | Time full historical backfill. | About 100,000 Olist orders. | Backfill completes in less than 30 minutes or records optimization notes. |
+| TC-PERF-002 | Full backfill meets Should target | Performance | Should | NFR-PERF-01 | Standard 16 GB profile is ready. | Time offline full historical backfill. | About 100,000 generated Olist-equivalent orders and recorded FX. | Backfill completes in less than 30 minutes or records optimization notes. |
 | TC-PERF-003 | CI duration meets Must target | Performance | Must | NFR-PERF-03, FR-CI-01 | Pull request CI is configured. | Run full CI on fixture data. | Each source table has at most 1,000 rows. | CI completes in 15 minutes or less. |
 | TC-CI-001 | Python coverage gates fail below line threshold | CI | Must | FR-CI-01, BR-20 | Coverage gate is configured. | Run coverage with line result `84%`. | Coverage report fixture. | CI fails because line threshold is `85%`. |
 | TC-CI-002 | Branch coverage gate is separate | CI | Must | FR-CI-01, BR-20 | Coverage gate is configured. | Run coverage with line `90%` and branch `74%`. | Coverage report fixture. | CI fails because branch threshold is `75%`. |
 | TC-CI-003 | Ruff mypy and SQLFluff gates run | CI | Must | FR-CI-01 with NFR-MAINT-01 and NFR-MAINT-02 | CI workflow exists. | Open one pull request with Python and dbt changes. | Fixture branch. | CI reports separate Ruff, mypy, and SQLFluff stages. |
-| TC-DOC-001 | Runbook covers failure operations | Documentation | Must | FR-DOC-01, BR-27 | Student runbook is drafted. | Review runbook sections. | Runbook document. | It covers daily run, backfill, missing files, quarantine review, FX failure, dbt failure, and dashboard refresh. |
+| TC-DOC-001 | Runbook covers local and failure operations | Documentation | Must | FR-DOC-01, BR-27 | Student runbook is drafted. | Review runbook sections. | Runbook document. | It covers start/stop/confirmed reset, offline demo, daily run, backfill, missing files, quarantine, explicit fixture/live FX failures, dbt failure, and exact JSON/CSV exports. |
 | TC-DOC-002 | Olist licence attribution is visible | Documentation | Must | FR-LIC-01 with BR-28 and NFR-LIC-01 | Student README and data dictionary exist. | Review attribution sections. | Documentation draft. | Both documents state Olist, Kaggle, CC BY-NC-SA 4.0, and non-commercial training use. |
 
 ## Traceability matrix
@@ -171,15 +179,16 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 |---|---|
 | FR-SIM-01 | Simulator evidence: TC-UT-001, TC-UT-002, TC-UT-003 |
 | FR-RAW-01 | Raw-load evidence: TC-UT-005, TC-UT-006, TC-IT-001, TC-IT-004 |
-| FR-RAW-02 | TC-UT-009, TC-UT-010, TC-UT-011, TC-IT-003, TC-IT-005 |
-| FR-FX-01 | TC-UT-012, TC-UT-013, TC-UT-014, TC-IT-006, TC-INFRA-005 |
+| FR-RAW-02 | Committed-file rerun evidence: TC-UT-009, TC-UT-010, TC-UT-011, TC-IT-003, TC-IT-005 |
+| FR-FX-01 | TC-UT-012, TC-UT-013, TC-UT-014, TC-UT-019, TC-IT-006, TC-INFRA-005, TC-INFRA-007, TC-LOCAL-002 |
 | FR-DBT-01 | dbt schema evidence: TC-IT-007, TC-IT-008, TC-IT-009, TC-DQ-008 |
 | FR-DBT-02 | TC-UT-015, TC-UT-016, TC-UT-017, TC-UT-018, TC-IT-010, TC-DQ-007 |
-| FR-DQ-01 | TC-DQ-001 through TC-DQ-019 |
+| FR-DQ-01 | dbt business/key/freshness checks: TC-DQ-001 through TC-DQ-019 |
 | FR-ORCH-01 | DAG evidence: TC-INFRA-001, TC-INFRA-002, TC-INFRA-003, TC-INFRA-006, TC-INFRA-008, TC-INFRA-009 |
 | FR-ANA-01 | Analytics-view evidence: TC-DQ-009, TC-DQ-011, TC-DQ-012, TC-DQ-015, TC-DQ-016, TC-DQ-017, TC-DQ-018, TC-DQ-019 |
-| FR-DASH-01 | Dashboard evidence: TC-IT-011, TC-UI-001, TC-UI-002, TC-UI-003 |
-| FR-CI-01 | TC-INFRA-004, TC-INFRA-005, TC-PERF-003, TC-CI-001, TC-CI-002, TC-CI-003 |
+| FR-REP-01 | Export evidence: TC-IT-011, TC-REP-001 through TC-REP-005, TC-LOCAL-002, TC-LOCAL-004 |
+| FR-OPS-01 | Local lifecycle acceptance: TC-LOCAL-001 through TC-LOCAL-004 |
+| FR-CI-01 | TC-INFRA-004, TC-INFRA-005, TC-PERF-003, TC-CI-001, TC-CI-002, TC-CI-003 and local/export CI jobs |
 | FR-DOC-01 | TC-DOC-001 |
 | FR-LIC-01 | Licence evidence: TC-UT-004, TC-SEC-003, TC-DOC-002 |
 | BR-01 | TC-UT-002 |
@@ -192,7 +201,7 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 | BR-08 | Logical-date evidence: TC-UT-010, TC-IT-003, TC-IT-005, TC-IT-014, TC-IT-015 |
 | BR-09 | TC-UT-012 |
 | BR-10 | TC-UT-012, TC-IT-006 |
-| BR-11 | TC-UT-014 |
+| BR-11 | Explicit FX-mode failure safety: TC-UT-014, TC-UT-019, TC-INFRA-007 |
 | BR-12 | TC-UT-013, TC-IT-006 |
 | BR-13 | TC-IT-009 |
 | BR-14 | TC-IT-007, TC-DQ-008 |
@@ -205,8 +214,8 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 | BR-21 | TC-UT-004 |
 | BR-22 | TC-INFRA-003 |
 | BR-23 | TC-DQ-011, TC-DQ-012 |
-| BR-24 | TC-UI-001 |
-| BR-25 | TC-UI-003 |
+| BR-24 | Report serialization/filter/error evidence: TC-REP-001 through TC-REP-005 |
+| BR-25 | Lite initialization/persistence verification: TC-LOCAL-001 through TC-LOCAL-004 |
 | BR-26 | TC-INFRA-004 |
 | BR-27 | TC-DOC-001 |
 | BR-28 | TC-DOC-002 |
@@ -214,7 +223,7 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 | NFR-PERF-01 | TC-PERF-002 |
 | NFR-PERF-02 | TC-PERF-001 |
 | NFR-PERF-03 | TC-PERF-003 |
-| NFR-SCALE-01 | TC-INFRA-004 and full-data demo step `DEMO-SCALE-01` |
+| NFR-SCALE-01 | TC-INFRA-004 and named verification `DEMO-SCALE-01`: locally generated historical backfill of about 100,000 orders. |
 | NFR-REL-01 | TC-UT-011, TC-IT-003 |
 | NFR-REL-02 | TC-INFRA-003 |
 | NFR-REL-03 | TC-UT-014 |
@@ -226,9 +235,9 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 | NFR-MAINT-02 | TC-CI-003 |
 | NFR-OBS-01 | TC-IT-012 |
 | NFR-OBS-02 | TC-IT-013 |
-| NFR-USE-01 | TC-UI-001 |
-| NFR-ACC-01 | Manual demo step `DEMO-ACC-01` checks readable labels at 1366×768. |
-| NFR-PORT-01 | Trainer pre-check step `DEMO-PORT-01` runs lite profile on Windows WSL2, macOS, or Linux. |
+| NFR-USE-01 | Exact payload and atomic-output checks: TC-REP-001, TC-REP-002, TC-REP-005 |
+| NFR-USE-02 | Named verification `DEMO-CLI-HELP-01`: help lists six views, filters, formats, and exit codes. |
+| NFR-PORT-01 | TC-LOCAL-001 through TC-LOCAL-004; trainer pre-check records OS and measured RAM against proposed doc 06 budgets. |
 | NFR-LIC-01 | TC-DOC-002 |
 
 ## Performance-test conditions
@@ -238,11 +247,11 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 | Lite hardware | 4 cores, 8 GB RAM, WSL2 memory `4GB`, swap `4GB`, processors `4` where applicable |
 | Standard hardware | 6 or more cores, 16 GB RAM |
 | Daily fixture | `fixture_2018_01_02_small`, 63 source rows |
-| Full backfill data | About 100,000 Olist orders |
+| Full backfill data | About 100,000 locally generated synthetic Olist-equivalent orders; real Olist is opt-in |
 | Warm-up | Start containers and run one small health check before timing |
 | Timer start | Airflow DAG run starts |
 | Timer stop | Quality summary and final notification complete |
-| Network | Full backfill may call Frankfurter outside CI; CI uses fixtures only |
+| Network | Recorded historical FX mode is the offline default for local and CI runs; live mode is separately opt-in and unnecessary for acceptance |
 | Pass target | Daily run less than 5 minutes; full backfill less than 30 minutes; CI less than 15 minutes |
 
 ## Defect report fields
@@ -281,5 +290,7 @@ The CI build MUST fail when line or branch coverage is below the threshold. Line
 6. The idempotency test keeps row counts and GMV unchanged for unchanged input checksums.
 7. CI finishes in 15 minutes or less on sample data.
 8. Documentation tests confirm runbook, data dictionary, and licence attribution.
+9. All six view JSON/CSV snapshots and TC-LOCAL-001 through TC-LOCAL-004 pass; runtime verification requires no external network or console interaction.
+10. At least 50 meaningful tests remain, with no frontend coverage or test requirement.
 
 [Back to README](../README.md)

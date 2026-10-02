@@ -21,13 +21,13 @@ Purpose: This document defines ShopSight terms and lists official documentation 
 | dbt | A transformation and testing tool for building warehouse models. |
 | Dimension table | A descriptive table such as customer, product, seller, or date. |
 | Fact table | A measurement table, such as orders or order items. |
-| Frankfurter | The free exchange-rate API used for BRL to INR rates. |
+| Frankfurter | The free BRL to INR API used only in opt-in live mode; recorded historical responses serve the explicit default local mode. |
 | Freight | Delivery charge. ShopSight reports it separately from GMV. |
 | GMV | Gross merchandise value. In ShopSight it is the sum of item prices only. |
 | Grain | The meaning of one row in a table. |
 | Idempotency | Safe rerun behaviour where the same logical date does not create duplicates. |
 | Landing folder | A date-partitioned folder such as `landing/date=2018-01-02/`. |
-| Lite profile | The 8 GB laptop setup with low Airflow parallelism and dashboard on demand. |
+| Lite profile | The four-core, 8 GB laptop setup with one LocalExecutor task/active DAG run, short-lived CLI exports, and no student UI services. |
 | Logical date | The business date processed by one pipeline run. |
 | Mart | A trusted analytics table or view built for reporting. |
 | Olist | The Brazilian e-commerce public dataset provider used for training data. |
@@ -40,7 +40,11 @@ Purpose: This document defines ShopSight terms and lists official documentation 
 | Source freshness | A check that source data arrived recently enough for the run. |
 | Star schema | A warehouse design with facts connected to dimensions. |
 | Surrogate key | A warehouse-generated key that identifies a dimension or fact row. |
-| Synthetic fallback | Fake data with the same schema as Olist when Kaggle access is unavailable. |
+| Synthetic local mode | Locally generated fictional data with the same Olist schemas, keys, and seed; the deliberate default, not a download-failure fallback. |
+| Report-export CLI | Python command that reads one of six analytics views and writes exact JSON or CSV without recalculating business rules. |
+| Recorded FX mode | Explicit offline ingestion of historical responses; never automatically entered after live retry failure. |
+| Loopback binding | Publishing a local service only on `127.0.0.1`, not on the host's external interfaces. |
+| Persistent local volume | Project-scoped storage that survives stop/start and is deleted only by explicitly confirmed reset. |
 | Window function | SQL that calculates rankings or running metrics across related rows. |
 
 ## Official documentation links
@@ -57,8 +61,9 @@ Purpose: This document defines ShopSight terms and lists official documentation 
 | dbt | https://docs.getdbt.com/ |
 | dbt-postgres | https://docs.getdbt.com/docs/core/connect-data-platform/postgres-setup |
 | Apache Airflow | https://airflow.apache.org/docs/apache-airflow/stable/ |
-| Streamlit | https://docs.streamlit.io/ |
-| Metabase | https://www.metabase.com/docs/latest/ |
+| Python argparse | https://docs.python.org/3.12/library/argparse.html |
+| Python CSV | https://docs.python.org/3.12/library/csv.html |
+| Python JSON | https://docs.python.org/3.12/library/json.html |
 | Docker Engine | https://docs.docker.com/engine/ |
 | Docker Compose | https://docs.docker.com/compose/ |
 | Mailpit | https://mailpit.axllent.org/ |
@@ -89,8 +94,8 @@ ShopSight uses the Olist Brazilian E-Commerce Public Dataset from Kaggle for non
 | pandas user guide | https://pandas.pydata.org/docs/user_guide/index.html |
 | Polars user guide | https://docs.pola.rs/user-guide/ |
 | Docker getting started | https://docs.docker.com/get-started/ |
-| Streamlit fundamentals | https://docs.streamlit.io/get-started |
-| Metabase getting started | https://www.metabase.com/docs/latest/installation-and-operation/running-metabase-on-docker |
+| Python command-line parsing | https://docs.python.org/3.12/library/argparse.html |
+| Decimal arithmetic | https://docs.python.org/3.12/library/decimal.html |
 | GitHub Actions | https://docs.github.com/en/actions |
 | GitHub Flow | https://docs.github.com/en/get-started/using-github/github-flow |
 
@@ -102,5 +107,6 @@ ShopSight uses the Olist Brazilian E-Commerce Public Dataset from Kaggle for non
 4. Read doc 09 before adding tests.
 5. Read this document when a term or tool is unclear.
 6. Revisit doc 13 during weeks 5 and 6 for interview practice.
+7. Use doc 06 for offline local operation and doc 08 for report interfaces. Resources support Python/data/backend/DevOps only; built-in Airflow/Mailpit consoles are optional operations inspection, not development exercises.
 
 [Back to README](../README.md)

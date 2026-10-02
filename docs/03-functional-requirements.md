@@ -1,6 +1,6 @@
 # Functional requirements
 
-Purpose: This document defines ShopSight behaviour for simulation, ingestion, FX, transformations, quality, orchestration, analytics, dashboard, CI, documentation, and licence compliance.
+Purpose: This document defines ShopSight behaviour for simulation, ingestion, FX, transformations, quality, orchestration, analytics, Python report exports, local operation, CI, documentation, and licence compliance.
 
 ## Requirement summary
 
@@ -15,22 +15,23 @@ Purpose: This document defines ShopSight behaviour for simulation, ingestion, FX
 | FR-DQ-01 | Run required data-quality tests | Must | Analytics engineer | BR-20 |
 | FR-ORCH-01 | Orchestrate the daily and backfill pipeline | Must | Data engineer | BR-08, BR-11, BR-22 |
 | FR-ANA-01 | Publish 6 required analytics views | Must | Data analyst | BR-13, BR-16, BR-17, BR-23 |
-| FR-DASH-01 | Provide a 4-chart sales dashboard | Must | Head of Sales, Data analyst | BR-24, BR-25 |
+| FR-REP-01 | Export the six views as exact JSON/CSV | Must | Head of Sales, Data analyst | BR-24 |
+| FR-OPS-01 | Start, initialize, demonstrate, and stop locally | Must | Data engineer, Trainer | BR-25 |
 | FR-CI-01 | Run CI with PostgreSQL and sample data | Must | Data engineer, Trainer | BR-20, BR-26 |
 | FR-DOC-01 | Publish dbt docs, data dictionary, and runbook | Must | Data engineer, Analytics engineer | BR-27 |
-| FR-LIC-01 | Document Olist licence, attribution, and fallback data | Must | Trainer, Data engineer | BR-21, BR-28 |
+| FR-LIC-01 | Document Olist licence, attribution, and synthetic local data | Must | Trainer, Data engineer | BR-21, BR-28 |
 | FR-SIM-02 | Configure simulator problem rates and late updates | Should | Data engineer | BR-03, BR-08 |
 | FR-DBT-03 | Add customer SCD Type 2 | Should | Analytics engineer | BR-14 |
 | FR-ANA-02 | Publish review-delay and retention analytics | Should | Data analyst | BR-23 |
 | FR-DQ-02 | Publish run quality report and performance evidence | Should | Data engineer | BR-20, BR-22 |
 | FR-EXT-01 | Add local Parquet lake or extra quality tool | Could | Data engineer | BR-29 |
-| FR-EXT-02 | Add lineage or cloud warehouse stretch | Could | Data engineer | BR-29 |
+| FR-EXT-02 | Add locally captured lineage evidence | Could | Data engineer | BR-29 |
 
 ## Must requirements
 
 ### FR-SIM-01 — Create deterministic daily Olist drops
 
-The simulator MUST split the historical Olist CSV data by `order_purchase_timestamp` into `landing/date=YYYY-MM-DD/` folders. It MUST use a documented seed value of `20261002` for the default split. It MUST create all 9 source files for each logical date, even when a file has only its header for that day.
+The simulator MUST locally generate synthetic Olist-equivalent historical data by default and split it by `order_purchase_timestamp` into `landing/date=YYYY-MM-DD/` folders. Real Olist CSV input is a separately selected source mode. It MUST use seed `20261002` for the default split and create all 9 source files for each logical date, even when a file has only its header for that day.
 
 | Field | Value |
 |---|---|
@@ -40,10 +41,10 @@ The simulator MUST split the historical Olist CSV data by `order_purchase_timest
 
 Acceptance criteria:
 
-1. Given the full Olist dataset and seed `20261002`, when the simulator builds `landing/date=2018-01-02/`, then that folder contains exactly the 9 documented CSV file names.
+1. Given locally generated Olist-equivalent data and seed `20261002`, when the simulator builds `landing/date=2018-01-02/`, then that folder contains exactly the 9 documented CSV file names.
 2. Given two simulator runs with seed `20261002`, when row counts are compared for `olist_orders_dataset.csv`, then every logical date has the same count in both runs.
-3. Given a missing source file named `olist_products_dataset.csv`, when the simulator starts, then it stops before writing a partial date folder and reports `SIM-MISSING-SOURCE`.
-4. Given Kaggle data is unavailable, when synthetic fallback is selected, then output files keep the same 9 file names and column names.
+3. Given opt-in Olist input lacks `olist_products_dataset.csv`, when the simulator starts, then it stops before writing a partial date folder and reports `SIM-MISSING-SOURCE` without switching modes.
+4. Given no internet or Kaggle files, when default synthetic mode runs after dependencies are installed, then it generates the same 9 file names, column names, and key relationships without attempting a download.
 
 ### FR-RAW-01 — Validate, load, audit, quarantine, and reconcile raw files
 
@@ -81,7 +82,7 @@ Acceptance criteria:
 
 ### FR-FX-01 — Ingest BRL to INR exchange rates
 
-The FX task MUST fetch BRL to INR rates from the official Frankfurter v2 API with ECB provider rates. For a single date it MAY use `/v2/rate/brl/inr?date=YYYY-MM-DD&providers=ecb`. For a range it MUST use `/v2/rates?base=brl&quotes=inr&from=YYYY-MM-DD&to=YYYY-MM-DD&providers=ecb`. Weekends and holidays MUST use the last available rate and set `is_carried_forward=true`.
+The FX task MUST use explicitly selected `fixture` or `live` mode. Default local mode reads committed recorded historical Frankfurter v2 responses with ECB provider rates. Live mode is opt-in and calls the official API. For a single date it MAY use `/v2/rate/brl/inr?date=YYYY-MM-DD&providers=ecb`. For a range it MUST use `/v2/rates?base=brl&quotes=inr&from=YYYY-MM-DD&to=YYYY-MM-DD&providers=ecb`. Both modes apply the same validation, provider, and carry-forward rules. Weekends and holidays MUST use the last available rate and set `is_carried_forward=true`.
 
 | Field | Value |
 |---|---|
@@ -91,10 +92,11 @@ The FX task MUST fetch BRL to INR rates from the official Frankfurter v2 API wit
 
 Acceptance criteria:
 
-1. Given logical date `2018-01-02`, when the FX task requests a single-day rate, then it stores base `BRL`, quote `INR`, provider `ecb`, `rate_date=2018-01-02`, and `is_carried_forward=false`.
-2. Given date range `2018-01-01` to `2018-01-07`, when the FX task backfills rates, then it uses the Frankfurter time-series endpoint with `from=2018-01-01` and `to=2018-01-07`.
+1. Given logical date `2018-01-02`, when the FX task reads its selected recorded/live source, then it stores base `BRL`, quote `INR`, provider `ecb`, `rate_date=2018-01-02`, and `is_carried_forward=false`.
+2. Given live mode and date range `2018-01-01` to `2018-01-07`, when the FX task backfills rates, then it uses the Frankfurter time-series endpoint with `from=2018-01-01` and `to=2018-01-07`. Fixture mode reads the corresponding recorded range, including its preceding market-day seed, without HTTP.
 3. Given `2018-01-01` has no market-day rate and `2017-12-29` has a rate, when the FX task stores `2018-01-01`, then `is_carried_forward=true` and `source_rate_date=2017-12-29`.
-4. Given Frankfurter returns HTTP `422` for an invalid currency, when 2 retries are exhausted, then the task fails, sends an alert, and does not insert a fallback rate.
+4. Given live mode and Frankfurter returns HTTP `422` for an invalid currency, when 2 retries are exhausted, then the task fails, sends an alert, and does not switch to fixtures or insert a fallback rate.
+5. Given fixture mode and a required date or preceding seed is absent, when the FX task runs, then it fails and alerts with `FX-FIXTURE-MISSING`; it neither calls the API nor invents a rate.
 
 ### FR-DBT-01 — Build dbt layers and star schema
 
@@ -111,7 +113,7 @@ Acceptance criteria:
 1. Given raw Olist tables exist, when dbt builds staging models, then source timestamps are typed as timestamps and money fields are typed as decimals.
 2. Given product categories exist in Portuguese, when `dim_product` builds, then it exposes `product_category_name_english` from `product_category_name_translation.csv`.
 3. Given `customer_unique_id=CUST-001` has two source `customer_id` values, when `dim_customer` builds in Must scope, then it creates one current customer row for `CUST-001`.
-4. Given a fact model lacks a documented grain key, when dbt tests run, then the build fails before dashboard refresh.
+4. Given a fact model lacks a documented grain key, when dbt tests run, then the build fails before certified report export.
 
 ### FR-DBT-02 — Apply money and payment reconciliation rules
 
@@ -150,7 +152,7 @@ Acceptance criteria:
 
 ### FR-ORCH-01 — Orchestrate the daily and backfill pipeline
 
-Airflow 3.x MUST orchestrate a daily DAG with LocalExecutor. The order MUST be wait for landing files, validate and load raw, fetch FX rates, run dbt source freshness, run dbt build, publish quality summary, and notify. Tasks MUST use 2 retries, a 5-minute retry delay, timeouts, and failure alerts.
+Airflow 3.x MUST orchestrate a daily DAG with LocalExecutor. The order MUST be wait for landing files, validate and load raw, read FX from the explicitly selected fixture/live source, run dbt source freshness, run dbt build, publish quality summary, and notify. Tasks MUST use 2 retries, a 5-minute retry delay, timeouts, and failure alerts. The default local DAG is initialized paused; demonstrations trigger historical logical dates explicitly, not uncontrolled catchup against today's date.
 
 | Field | Value |
 |---|---|
@@ -182,25 +184,44 @@ Acceptance criteria:
 3. Given seller monthly GMV, when `mart_seller_ranking` is queried, then it includes a window rank column named `seller_rank`.
 4. Given an analytics view reads a raw table directly, when review runs, then the view is rejected because analytics must read marts.
 
-### FR-DASH-01 — Provide a 4-chart sales dashboard
+### FR-REP-01 — Export the six views as exact JSON/CSV
 
-The dashboard MUST show at least 4 charts for monthly GMV, top categories, late delivery by state, and payment-method mix. Streamlit or Metabase OSS is allowed. In the 8 GB lite profile, the dashboard MUST run on demand and not at the same time as Airflow.
+The Python command `shopsight report export` MUST read only the six analytics views through a SELECT-only database user. It MUST return JSON or CSV using doc 08's exact columns, filters, ordering, decimal serialization, empty results, and exit codes. It MUST NOT reimplement SQL business calculations or read raw tables.
 
 | Field | Value |
 |---|---|
 | Priority | Must |
 | Roles | Head of Sales, Data analyst |
-| Linked BRs | BR-24, BR-25 |
+| Linked BRs | BR-24 |
 
 Acceptance criteria:
 
-1. Given marts are built, when the Head of Sales opens the dashboard, then 4 charts show labels with BRL or INR where money appears.
-2. Given the lite profile is active, when Airflow is running, then the documented run procedure keeps the dashboard stopped.
-3. Given a chart source view is empty, when the dashboard opens, then it shows `No data for selected date range` instead of a stack trace.
+1. Given the small fixture is built, when `--view mart_monthly_gmv --month 2018-01 --format json` is exported, then one row contains order count `7`, item count `9`, GMV BRL `"900.00"`, GMV INR `"17550.00"`, and freight BRL `"120.00"`.
+2. Given each of the six views, when JSON and CSV exports are compared to SQL results, then columns and values match exactly; currency fields keep their `_brl`/`_inr` suffixes and no binary floats appear.
+3. Given `--month 2019-01` has no rows, when the command runs, then JSON returns `row_count=0` and `rows=[]`, or CSV returns only its exact header, with exit `0`.
+4. Given `--view raw_olist_orders` or unsupported `--state` filtering, when the command runs, then it exits `2` with `REPORT-INVALID-ARGUMENT` before SQL execution.
+5. Given PostgreSQL is unavailable, when export runs, then it exits `3` with `LOCAL-DEPENDENCY-UNAVAILABLE` on stderr and writes no partial output.
+
+### FR-OPS-01 — Start, initialize, demonstrate, and stop locally
+
+The student MUST implement the single start and stop entry points in doc 06, idempotent database/Airflow initialization, fictional seed generation, health checks, offline demonstration, persistent volumes, and explicitly confirmed local reset. No paid account, API key, public hostname, cloud resource, or built-in console interaction is required.
+
+| Field | Value |
+|---|---|
+| Priority | Must |
+| Roles | Data engineer, Trainer |
+| Linked BRs | BR-25 |
+
+Acceptance criteria:
+
+1. Given a clean clone with initial dependencies/images downloaded, when the doc 06 lite start entry point runs without internet, then PostgreSQL, Airflow components, and Mailpit are healthy on their fixed loopback ports. Start exits `0` and prints doc 06's exact healthy JSON with modes `synthetic` and `fixture`.
+2. Given initialization completes, when the seeded demonstration runs, then source/accepted/quarantined totals are `63/60/3`, mart orders/items are `7/9`, and the exact monthly JSON/CSV exports match doc 08.
+3. Given the demonstration completed, when stop then start runs, then committed checksums, raw counts, mart totals, and audit history survive; initialization does not reseed over existing data.
+4. Given invalid profile or unavailable Docker/database, when a local command runs, then doc 08's error/exit contract applies; no destructive action occurs. Reset without `--confirm-delete-data` refuses with `LOCAL-RESET-CONFIRMATION-REQUIRED`.
 
 ### FR-CI-01 — Run CI with PostgreSQL and sample data
 
-GitHub Actions MUST run on pull requests and pushes to `main`. CI MUST use a PostgreSQL service container and deterministic sample data with at most 1,000 rows per source table. CI MUST run lint, type checks, pytest, coverage, SQLFluff, DAG integrity checks, and dbt build.
+GitHub Actions MUST run on pull requests and pushes to `main`. CI MUST use a PostgreSQL service container and deterministic sample data with at most 1,000 rows per source table. CI MUST run lint, type checks, pytest, separate Python line/branch coverage gates, SQLFluff, DAG integrity, dbt build, JSON/CSV export snapshots, and the doc 09 local acceptance suite. Runtime acceptance tests use fixtures with external network blocked after dependency/image installation.
 
 | Field | Value |
 |---|---|
@@ -217,7 +238,7 @@ Acceptance criteria:
 
 ### FR-DOC-01 — Publish dbt docs, data dictionary, and runbook
 
-The student repository MUST include dbt documentation with lineage, a data dictionary, and a pipeline runbook. The runbook MUST cover daily run, backfill, missing files, quarantine review, FX failure, dbt test failure, and dashboard refresh.
+The student repository MUST include dbt documentation with lineage, a data dictionary, and a pipeline runbook. The runbook MUST cover local start/stop/reset, offline demonstration, daily run, backfill, missing files, quarantine review, explicit FX modes and failures, dbt test failure, and JSON/CSV exports.
 
 | Field | Value |
 |---|---|
@@ -228,12 +249,12 @@ The student repository MUST include dbt documentation with lineage, a data dicti
 Acceptance criteria:
 
 1. Given the final repository, when the trainer opens the data dictionary, then it defines every mart table and analytics view.
-2. Given an FX failure alert, when the runbook is followed, then it names where to find retries, fixture status, and the failed logical date.
+2. Given an FX failure alert, when the runbook is followed, then it names where to find the selected mode, retries, fixture provenance when applicable, and failed logical date without prescribing a silent mode switch.
 3. Given dbt docs are generated, when lineage is reviewed, then `fct_order_items` shows upstream raw or staging dependencies.
 
-### FR-LIC-01 — Document Olist licence, attribution, and fallback data
+### FR-LIC-01 — Document Olist licence, attribution, and synthetic local data
 
-The project MUST document that the Olist Brazilian E-Commerce Public Dataset comes from Kaggle and uses CC BY-NC-SA 4.0. The student MUST credit Olist and Kaggle. The synthetic fallback MUST use the same file names, column names, and key relationships.
+The project MUST document that the Olist Brazilian E-Commerce Public Dataset comes from Kaggle and uses CC BY-NC-SA 4.0. The student MUST credit Olist and Kaggle as the schema reference, identify default locally generated fictional data, and distinguish it from opt-in real Olist input. Synthetic mode MUST use the same file names, column names, and key relationships.
 
 | Field | Value |
 |---|---|
@@ -244,8 +265,8 @@ The project MUST document that the Olist Brazilian E-Commerce Public Dataset com
 Acceptance criteria:
 
 1. Given the student README, when licence notes are reviewed, then it states Olist, Kaggle, CC BY-NC-SA 4.0, and non-commercial training use.
-2. Given fallback synthetic data is used, when the loader validates files, then all 9 files match the real Olist column names.
-3. Given the dashboard is demoed, when the trainer asks for source attribution, then the student can point to the README and data dictionary.
+2. Given default local synthetic data is used, when the loader validates files, then all 9 files match the real Olist column names.
+3. Given reports are exported, when the trainer asks for source attribution and mode, then the student can point to the README, data dictionary, and run configuration.
 
 ## Should and Could requirements
 
@@ -254,9 +275,9 @@ Acceptance criteria:
 | FR-SIM-02 | The simulator SHOULD allow configured duplicate, null, bad-date, bad-money, and late-status-update rates. | Given `duplicate_rate=0.02`, one seeded run creates the same duplicate row set each time. Given `late_update_rate=0.01`, only existing order IDs are updated. |
 | FR-DBT-03 | `dim_customer` SHOULD support SCD Type 2 on city and state. | Given one `customer_unique_id` moves state on `2018-06-01`, facts before that date reference the old version and facts after it reference the new version. |
 | FR-ANA-02 | The marts SHOULD expose review-score-versus-delay and repeat-customer retention views. | Given repeat buyers exist, the retention view returns `cohort_month`, `age_month`, `customers`, and `repeat_customer_rate`. |
-| FR-DQ-02 | Each run SHOULD publish a Markdown or HTML quality report and SHOULD record performance evidence. | Given a daily run completes, the report shows source, accepted, quarantined, dbt failures, and elapsed time. |
+| FR-DQ-02 | Each run SHOULD publish a Markdown, JSON, or CSV quality report and SHOULD record performance evidence. | Given a daily run completes, the report shows source, accepted, quarantined, dbt failures, and elapsed time. |
 | FR-EXT-01 | The project MAY add a local Parquet lake or Great Expectations or Soda after Must work is complete. | Given all Must CI gates pass, the ADR explains added value and local resource cost. |
-| FR-EXT-02 | The project MAY add OpenLineage or a free-tier cloud warehouse after Must work is complete. | Given cloud is used, the ADR includes cost warning and destroy-after-demo steps. |
+| FR-EXT-02 | The project MAY capture OpenLineage evidence locally after Must work is complete. | Given lineage is captured, the ADR explains its data-engineering value and offline resource budget; no frontend or cloud deployment is added. |
 
 ## Business rules
 
@@ -271,7 +292,7 @@ Acceptance criteria:
 | BR-07 | Duplicate-file checks use the current committed file state. | Skip only when logical date, file name, and checksum match the current committed state. Failed attempts never commit. | FR-RAW-02 |
 | BR-08 | Idempotency is defined per logical date and current input. | Unchanged reruns keep counts and totals unchanged. Corrected inputs rebuild affected purchase-date partitions and remove missing fact keys. | FR-RAW-02, FR-ORCH-01 |
 | BR-09 | FX base and quote are fixed for board revenue. | Base `BRL`; quote `INR`. | FR-FX-01 |
-| BR-10 | Frankfurter v2 endpoint formats are fixed. | Single date `/v2/rate/brl/inr?date=YYYY-MM-DD&providers=ecb`; range `/v2/rates?base=brl&quotes=inr&from=YYYY-MM-DD&to=YYYY-MM-DD&providers=ecb`. | FR-FX-01 |
+| BR-10 | Frankfurter v2 endpoint formats and recorded-response schemas are fixed. | Opt-in live single date `/v2/rate/brl/inr?date=YYYY-MM-DD&providers=ecb`; range `/v2/rates?base=brl&quotes=inr&from=YYYY-MM-DD&to=YYYY-MM-DD&providers=ecb`. Local fixture mode parses recorded responses without HTTP. | FR-FX-01 |
 | BR-11 | FX failures do not silently fallback after retries fail. | 2 retries; failure alert after final failure. | FR-FX-01, FR-ORCH-01 |
 | BR-12 | Closed-day rates must be flagged. | `is_carried_forward=true`; keep `source_rate_date`. | FR-FX-01 |
 | BR-13 | Star schema mart names are fixed. | `fct_order_items`, `fct_orders`, `fct_order_payments`, `dim_customer`, `dim_product`, `dim_seller`, `dim_date`. | FR-DBT-01, FR-ANA-01 |
@@ -281,12 +302,12 @@ Acceptance criteria:
 | BR-17 | Money uses decimal types. | No floating point money values. | FR-DBT-02, FR-ANA-01 |
 | BR-18 | Rounding happens only at mart output level. | Half-up rounding to 2 decimal places; examples `12.345` to `12.35` and `12.355` to `12.36`. | FR-DBT-02 |
 | BR-19 | Payment reconciliation tolerance is fixed. | Orders outside ±1% go to `dq_payment_exceptions` and stay out of certified financial views. | FR-DBT-02 |
-| BR-20 | Test minimums are fixed. | 5 singular dbt tests; 3 dbt unit tests; 85% line and 75% branch coverage. | FR-DQ-01, FR-CI-01, FR-DQ-02 |
-| BR-21 | Dataset licence and fallback rules are fixed. | Olist Kaggle data; CC BY-NC-SA 4.0; synthetic fallback same schema. | FR-SIM-01, FR-LIC-01 |
+| BR-20 | Test minimums are fixed. | At least 50 meaningful cases, including 5 singular dbt tests and 3 dbt unit tests; 85% line and 75% branch coverage. | FR-DQ-01, FR-CI-01, FR-DQ-02 |
+| BR-21 | Dataset licence and local-mode rules are fixed. | Olist Kaggle schema reference; CC BY-NC-SA 4.0; locally generated synthetic data is the explicit default with the same schema. | FR-SIM-01, FR-LIC-01 |
 | BR-22 | Airflow retry values are fixed. | 2 retries; 5-minute retry delay. | FR-ORCH-01, FR-DQ-02 |
 | BR-23 | Required analytics count is fixed. | 6 Must views; at least 2 with window functions. | FR-ANA-01, FR-ANA-02 |
-| BR-24 | Dashboard Must scope count is fixed. | At least 4 charts. | FR-DASH-01 |
-| BR-25 | Lite profile constraint is fixed. | 8 GB RAM; dashboard on demand; not active with Airflow. | FR-DASH-01 |
+| BR-24 | Report exports preserve all six view contracts. | JSON/CSV only, exact doc 08 columns and stable ordering, decimal strings, no-data exit `0`; invalid input exit `2`, dependency unavailable exit `3`. | FR-REP-01 |
+| BR-25 | Local operation contract is fixed. | 8 GB four-core lite profile; doc 06 loopback ports, one start/stop entry point, initialization, offline seeded demo, persistent storage, and confirmed reset. RAM limits are proposed, not measured. | FR-OPS-01 |
 | BR-26 | CI sample size is fixed. | At most 1,000 rows per source table. | FR-CI-01 |
 | BR-27 | Documentation deliverables are fixed. | dbt docs, data dictionary, pipeline runbook. | FR-DOC-01 |
 | BR-28 | Attribution must be visible. | Credit Olist and Kaggle in README and data dictionary. | FR-LIC-01 |
@@ -341,8 +362,8 @@ stateDiagram-v2
 
 | From | Event | Guard | To | Actor |
 |---|---|---|---|---|
-| Requested | API returns dated BRL INR rate | Rate date equals logical date | DirectRate | FX task |
-| Requested | API has no closed-day row | Earlier rate exists | CarryForward | FX task |
+| Requested | Selected fixture/live source returns dated BRL INR rate | Rate date equals logical date | DirectRate | FX task |
+| Requested | Selected source has no closed-day row | Earlier rate exists | CarryForward | FX task |
 | Requested | HTTP 5xx or timeout | Retry count less than 2 | RetryWaiting | Airflow |
 | RetryWaiting | Delay elapsed | 5 minutes passed | Requested | Airflow |
 | RetryWaiting | Final retry failed | Retry count equals 2 | Failed | Airflow |
@@ -378,7 +399,11 @@ stateDiagram-v2
 | Reconciliation mismatch | Load status becomes failed. | `RAW-RECONCILIATION-FAILED` |
 | Frankfurter unavailable | Task retries twice and alerts after final failure. | `FX fetch failed after 2 retries` |
 | dbt test failure | Publish is blocked. | Failing model or test name |
-| Dashboard view empty | Dashboard shows empty-state message. | `No data for selected date range` |
+| Report view empty | JSON empty rows or CSV header only; exit `0`. | `row_count=0`, `rows=[]` for JSON |
+| Invalid CLI argument | No SQL or destructive operation; exit `2`. | `REPORT-INVALID-ARGUMENT` or `LOCAL-INVALID-ARGUMENT` |
+| Local dependency unavailable | Fail clearly without partial exports; exit `3`. | `LOCAL-DEPENDENCY-UNAVAILABLE` |
+| Recorded FX date/seed missing | Fail and alert without network or mode switch. | `FX-FIXTURE-MISSING` |
+| Reset not confirmed | Preserve all local data; exit `2`. | `LOCAL-RESET-CONFIRMATION-REQUIRED` |
 | CI sample too large | CI fails before dbt build. | `CI-SAMPLE-ROW-LIMIT` |
 
 [Back to README](../README.md)

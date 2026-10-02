@@ -13,7 +13,9 @@ Purpose: This document defines the ShopSight pipeline interfaces, schedules, tas
 | dbt job | `dbt_build_shopsight` | Airflow DAG | FR-DBT-01, FR-DBT-02, FR-DQ-01 |
 | Quality job | `publish_quality_summary` | Airflow DAG | FR-DQ-01, FR-DQ-02 |
 | Notify job | `notify_pipeline_result` | Airflow DAG | FR-ORCH-01 |
-| Analytics views | 6 mart views | Analyst, dashboard | FR-ANA-01 |
+| Analytics views | 6 mart views | Analyst, Python report CLI | FR-ANA-01 |
+| Report export | `shopsight report export` | Analyst, CI, sales report consumers | FR-REP-01 |
+| Local lifecycle and demo | `shopsight local start/stop/health/reset`, `shopsight demo` | Data engineer, Trainer | FR-OPS-01 |
 
 ## Landing-zone layout
 
@@ -62,8 +64,8 @@ landing/date=2018-01-02/
 | Field | Value |
 |---|---|
 | Job name | `simulate_daily_drops` |
-| Purpose | Split historical Olist rows into deterministic daily landing folders. |
-| Main input | Full Olist dataset or synthetic fallback with the same schema. |
+| Purpose | Generate synthetic Olist-equivalent rows locally by default, then split historical rows into deterministic daily landing folders. |
+| Main input | Explicit `synthetic` default or opt-in `olist` source mode with the same schema. |
 | Main output | `landing/date=YYYY-MM-DD/` folders. |
 | Default seed | `20261002` |
 | Required injected problems | fixed injection manifest after partitioning; duplicates, null required fields, bad dates, bad money values |
@@ -75,12 +77,12 @@ Parameters:
 
 | Name | Type | Required | Default | Rule |
 |---|---|---|---|---|
-| `source_dir` | path | Yes | None | Contains the 9 original CSV files. |
+| `source_dir` | path | For `olist` mode | `data/synthetic` in synthetic mode | Generated locally in synthetic mode; supplied directory must contain all 9 original-schema CSV files in `olist` mode. |
 | `output_root` | path | Yes | `landing` | Creates date folders under this root. |
 | `start_date` | date | No | Earliest order date | Format `YYYY-MM-DD`. |
 | `end_date` | date | No | Latest order date | Format `YYYY-MM-DD`. |
 | `seed` | integer | No | `20261002` | Same seed produces same split and same injected rows. |
-| `fallback_mode` | enum | No | `false` | `false` or `synthetic`. |
+| `source_mode` | enum | No | `synthetic` | `synthetic` or opt-in `olist`; never automatically changed on failure. |
 | `duplicate_rate` | decimal | No | `0.00` | Should scope. Range `0.00` to `0.10`. |
 | `null_rate` | decimal | No | `0.00` | Should scope. Range `0.00` to `0.10`. |
 | `bad_date_rate` | decimal | No | `0.00` | Should scope. Range `0.00` to `0.05`. |
@@ -90,7 +92,7 @@ Example operation:
 
 ```text
 Operation: simulate_daily_drops
-Input: source_dir=data/olist, output_root=landing, start_date=2018-01-01, end_date=2018-01-03, seed=20261002
+Input: source_mode=synthetic, source_dir=data/synthetic, output_root=landing, start_date=2018-01-01, end_date=2018-01-03, seed=20261002
 Expected output: three folders named landing/date=2018-01-01/, landing/date=2018-01-02/, and landing/date=2018-01-03/
 Expected status: SIMULATED
 ```
@@ -128,6 +130,7 @@ The fixed manifest always applies after partitioning. Optional rates add extra s
 | Time zone | `Asia/Kolkata` |
 | Logical-date format | `YYYY-MM-DD` |
 | Catchup | Enabled for controlled historical backfills |
+| Local initialization | Register paused; trigger explicit historical dates only until the operator deliberately enables scheduling. |
 | Default retries | 2 |
 | Retry delay | 5 minutes |
 | Max active runs | 1 in lite profile; 2 in standard profile |
@@ -140,10 +143,10 @@ Task table:
 |---|---|---|---|---:|---|---|---|
 | `wait_for_landing_files` | Wait for the 9 files for one logical date. | `landing/date=YYYY-MM-DD/` | File-ready signal | 2 | 20 minutes | Logical date plus required file list | Fail run and alert with missing file names. |
 | `validate_and_load_raw` | Validate rows, load accepted rows, quarantine bad rows, and write audit counts. | 9 CSV files, logical date, batch ID | `raw_olist_*`, `raw_quarantine`, `raw_load_audit` | 2 | 30 minutes | Logical date, file name, checksum | Mark audit failed and block downstream tasks. |
-| `fetch_fx_rates` | Fetch or backfill BRL to INR rates. | Logical date or date range | `stg_fx_rates` source table or raw FX table | 2 | 10 minutes | Rate date, base `BRL`, quote `INR` | Fail after retries and send alert. No silent fallback. |
+| `fetch_fx_rates` | Read recorded historical fixtures by default; fetch live rates only in opt-in mode. | Explicit FX mode, logical date or date range | `stg_fx_rates` source table or raw FX table | 2 | 10 minutes | Rate date, base `BRL`, quote `INR` | Fail and alert on missing fixtures or exhausted live retries. Never switch modes. |
 | `run_dbt_source_freshness` | Run dbt source freshness before model build. | Raw tables, committed states, and FX rates | Freshness result | 2 | 10 minutes | dbt invocation ID and logical date | Fail before staging when sources are stale. |
-| `run_dbt_build` | Build staging, intermediate, marts, tests, and analytics views. | Fresh raw tables and FX rates | dbt models and test results | 2 | 30 minutes | dbt invocation ID and logical date | Fail before dashboard refresh. |
-| `publish_quality_summary` | Publish structured counts, status, failures, and elapsed time. | Audit rows and dbt artifacts | Structured quality summary; optional Markdown or HTML report | 2 | 10 minutes | Logical date and run ID | Mark summary as failed and alert. |
+| `run_dbt_build` | Build staging, intermediate, marts, tests, and analytics views. | Fresh raw tables and FX rates | dbt models and test results | 2 | 30 minutes | dbt invocation ID and logical date | Fail before certified report publication for this run. |
+| `publish_quality_summary` | Publish structured counts, status, failures, and elapsed time. | Audit rows and dbt artifacts | Structured quality summary; optional Markdown/JSON/CSV report | 2 | 10 minutes | Logical date and run ID | Mark summary as failed and alert. |
 | `notify_pipeline_result` | Notify success or failure. | Run status, report path, failed task if any | Mailpit e-mail or webhook JSON | 2 | 5 minutes | Stable run ID | At-least-once alert with de-duplication key. |
 
 Dependency order:
@@ -239,15 +242,20 @@ Example quarantine payload:
 | Base currency | `BRL` |
 | Quote currency | `INR` |
 | Provider | `ecb` |
+| Default local mode | `SHOP_FX_MODE=fixture`: read committed recorded historical responses, never HTTP. |
+| Opt-in live mode | `SHOP_FX_MODE=live`: call the exact endpoints below; do not switch to fixture mode after failure. |
 | Single-date endpoint | `https://api.frankfurter.dev/v2/rate/brl/inr?date=YYYY-MM-DD&providers=ecb` |
 | Range endpoint | `https://api.frankfurter.dev/v2/rates?base=brl&quotes=inr&from=YYYY-MM-DD&to=YYYY-MM-DD&providers=ecb` |
 | Retries | 2 |
 | Retry delay | 5 minutes |
 | Failure rule | Fail the task and alert after retries. |
+| Fixture failure rule | Missing requested date or preceding market-day seed fails and alerts with `FX-FIXTURE-MISSING`; no external request or invented rate. |
 | CI rule | Use recorded fixture files. No live network request. |
 | Weekend or holiday rule | Use last available ECB rate and set `is_carried_forward=true`. |
 | Range seed rule | Seed a range with the preceding available rate when the first date is closed. |
 | Rerun rule | Keep already committed rates unchanged on identical reruns. |
+
+Both modes validate base `BRL`, quote `INR`, provider `ecb`, date coverage, and positive decimal rates. Recorded files include source URL, requested dates, recording provenance, and checksum. Log the selected mode and source file/endpoint for every FX task. The default fixture range includes the preceding available market-day response so closed start dates can be carried forward. Fixture mode is a deliberate local source, not recovery from a failed live request.
 
 Stored FX fields:
 
@@ -286,14 +294,14 @@ The student MUST describe selectors in dbt project terms. The spec names the sta
 | Source completeness | Committed-state check for all 9 files | Verify bootstrap sources have a successful bootstrap commit. Judge header-only daily files by `raw_committed_file_state.committed_at_utc`. Stop before staging if any file lacks a successful committed state. |
 | Staging | All staging models and their tests | Standardize source names and types. | Stop before intermediate models. |
 | Intermediate | Reusable join and money models | Build payment and GMV calculations. | Stop before marts. |
-| Marts | Dimensions, facts, and analytics views | Publish trusted business tables. | Stop dashboard refresh. |
+| Marts | Dimensions, facts, and analytics views | Publish trusted business tables. | Stop certified report publication for the failed run. |
 | Business tests | Generic, singular, and unit tests | Verify keys, relationships, money, FX, and revenue. | Mark run failed. |
 
 dbt MUST build `stg_orders`, `stg_order_items`, `stg_payments`, `stg_fx_rates`, `int_order_money`, `dim_date`, `dim_customer`, `dim_product`, `dim_seller`, `fct_orders`, `fct_order_items`, `fct_order_payments`, and the 6 Must analytics views.
 
 ## Data-quality summary format
 
-The Must quality summary is structured counts and status. The Should report MAY render the same data as Markdown or HTML. It MUST contain these fields.
+The Must quality summary is structured counts and status. The Should report MAY serialize the same data as Markdown, JSON, or CSV. It MUST contain these fields; no HTML or frontend is built.
 
 | Field | Type | Example |
 |---|---|---|
@@ -345,7 +353,7 @@ Success payload:
 }
 ```
 
-The `report_path` alert field is optional. It is present when the Should Markdown or HTML report is produced.
+The `report_path` alert field is optional. It is present when the Should Markdown/JSON/CSV quality report is produced.
 
 Failure payload:
 
@@ -368,7 +376,7 @@ Failure payload:
 1. Confirm that `landing/date=YYYY-MM-DD/` folders exist for the full range.
 2. Confirm that each folder contains the 9 required CSV files.
 3. Run the Airflow backfill for the inclusive date range.
-4. Use the range FX endpoint for BRL to INR rates where possible.
+4. Read the recorded historical range and preceding seed in default fixture mode; only opt-in live mode uses the range FX endpoint.
 5. Keep `max_active_runs=1` on the lite profile.
 6. Review `raw_load_audit` for each logical date.
 7. Confirm that source rows equal accepted rows plus quarantined rows.
@@ -390,7 +398,7 @@ Expected status: success when all three logical dates reconcile
 | SLA | Target | Scope | Verification |
 |---|---:|---|---|
 | Daily run | Less than 5 minutes | One representative logical date after setup | Timed Airflow run |
-| Full backfill | Less than 30 minutes | About 100,000 Olist orders on standard profile | Timed local demo |
+| Full backfill | Less than 30 minutes | About 100,000 synthetic Olist-equivalent orders on standard profile; real Olist opt-in | Timed local demo |
 | Sensor wait | 20 minutes before failure | One logical date folder | DAG task log |
 | CI run | 15 minutes or less | Pull request with sample data | GitHub Actions duration |
 | Alert delivery | Within 1 minute after terminal task state | Mailpit or webhook | Alert timestamp |
@@ -467,6 +475,65 @@ Certified financial views MUST exclude order IDs listed in `dq_payment_exception
 | Metrics | Payment share percent equals payment value for the method divided by total monthly payment value times 100. |
 | Output columns | `month`, `payment_type`, `payment_order_count`, `payment_value_brl`, `payment_share_pct` |
 
+## Python report-export CLI contract
+
+Requirement: `FR-REP-01`, `BR-24`, `NFR-USE-01`. Implement a Python console entry point in the student repository, invoked as `uv run --no-sync shopsight report export`. No HTTP business UI, BI tool, chart, or frontend is implemented.
+
+| Argument | Contract |
+|---|---|
+| `--view` | Required allowlist: exactly the six view names above. No table name or SQL fragment is accepted. |
+| `--month` | Optional purchase month, strict `YYYY-MM`; parameterized equality on the view's `month`. Omitted means all available months. |
+| `--state` | Optional two-letter state equality only for `mart_delivery_state`/`mart_late_delivery` (`customer_state`) or `mart_seller_ranking` (`seller_state`). Reject it for the other three views; do not recompute their population or ranks. |
+| `--format` | Required `json` or `csv`. |
+| `--output` | Optional destination file. Omitted means stdout. When supplied, write the complete result atomically to the file and leave stdout empty; failure leaves an existing file unchanged. |
+
+Read only the named view through `report_reader`. Preserve its grain, keys, delivered/accepted-order filters, top-10 rule, payment exception exclusion, window ranks, and currency calculations. Python performs no joins, rankings, payment-share recalculation, or money arithmetic. JSON/CSV columns are exactly the view's ordered output columns above. Money is serialized as two-decimal strings, never binary floats; other SQL decimals are strings preserving the view's declared scale. Counts and ranks are integers, dates/months and identifiers are strings. SQL null is JSON `null` or an empty CSV cell.
+
+| View | Deterministic row ordering |
+|---|---|
+| `mart_monthly_gmv` | `month` ascending |
+| `mart_top_categories` | `month`, `category_rank`, `product_category_name_english` ascending |
+| `mart_delivery_state` | `month`, `customer_state` ascending |
+| `mart_late_delivery` | `month`, `customer_state` ascending |
+| `mart_seller_ranking` | `month`, `seller_rank`, `seller_id` ascending |
+| `mart_payment_mix` | `month`, `payment_type` ascending |
+
+JSON uses exactly `view`, `filters`, `row_count`, and `rows` in that order. `filters` always contains `month` and `state`, each the requested value or `null`; every row contains the exact ordered view fields. Serialize UTF-8 compact JSON with one trailing LF and no volatile timestamp. CSV uses UTF-8, comma delimiter, a header, standard double-quote escaping, and LF row endings including a final LF. Logs go to stderr, never into the payload.
+
+For `fixture_2018_01_02_small`, this command:
+
+```text
+uv run --no-sync shopsight report export --view mart_monthly_gmv --month 2018-01 --format json
+```
+
+MUST emit exactly:
+
+```json
+{"view":"mart_monthly_gmv","filters":{"month":"2018-01","state":null},"row_count":1,"rows":[{"month":"2018-01","order_count":7,"item_count":9,"gmv_brl":"900.00","gmv_inr":"17550.00","freight_brl":"120.00"}]}
+```
+
+The same command with `--format csv` emits exactly:
+
+```text
+month,order_count,item_count,gmv_brl,gmv_inr,freight_brl
+2018-01,7,9,900.00,17550.00,120.00
+```
+
+For `--month 2019-01`, JSON has the same envelope with that month, `state:null`, `row_count:0`, and `rows:[]`; CSV contains only the exact header. Both exit `0`. Tests MUST snapshot every view in both formats and compare rows to SQL over the same eligible population, including the existing category, delivery, seller, and payment fixtures in doc 09.
+
+### CLI error and exit contract
+
+Errors are JSON objects with `error_code` and actionable `message` on stderr, no credentials or stack trace. On failure, stdout contains no partial JSON/CSV. A database connection uses a bounded 5-second connect timeout.
+
+| Exit | Code / condition |
+|---:|---|
+| 0 | Successful report/local command, including a well-formed empty report. |
+| 2 | `REPORT-INVALID-ARGUMENT` for unsupported view/format/filter; `LOCAL-INVALID-ARGUMENT` for invalid profile/mode; `LOCAL-RESET-CONFIRMATION-REQUIRED` for unconfirmed reset. |
+| 3 | `LOCAL-DEPENDENCY-UNAVAILABLE` for unavailable Docker/PostgreSQL or unhealthy required services; `LOCAL-PORT-IN-USE` for a fixed host-port collision. |
+| 4 | `REPORT-OUTPUT-FAILED` for an unwritable destination; preserve any existing output file. |
+
+Local lifecycle, initialization, health output, persisted volumes, and exact `shopsight demo` output are authoritative in [doc 06](06-tech-stack-and-setup.md). Fixture/pipeline failures use the existing pipeline codes below and a failed run, not a mode switch.
+
 ## Error formats
 
 Pipeline errors MUST use a stable code and clear context.
@@ -488,6 +555,7 @@ Pipeline errors MUST use a stable code and clear context.
 | `VAL-ORDER-ID-REQUIRED` | A row has blank `order_id`. | Quarantined row |
 | `RAW-RECONCILIATION-FAILED` | Audit counts do not balance. | Failed raw load |
 | `FX-HTTP-RETRY-EXHAUSTED` | Frankfurter failed after 2 retries. | Failed FX task |
+| `FX-FIXTURE-MISSING` | Requested recorded historical date or preceding seed is absent. | Failed FX task |
 | `DBT-TEST-FAILED` | dbt returned failing tests. | Failed dbt task |
 | `CI-SAMPLE-ROW-LIMIT` | A CI sample source file has more than 1,000 data rows. | Failed CI |
 
